@@ -1372,6 +1372,28 @@ check('сумма отрицательная', lastRow()[2] === -74.9, String(la
 check('бот назвал это возвратом', /Записал возврат/.test(sent[sent.length - 1].text),
   sent[sent.length - 1].text.slice(0, 60));
 
+// --- Адрес мини-приложения ---------------------------------------------------
+console.log('\n=== Настройка мини-приложения ===');
+
+post({ message: msg({ text: '/miniapp' }) });
+check('без адреса бот объясняет, что прислать',
+  /не задан/i.test(sent[sent.length - 1].text), sent[sent.length - 1].text.slice(0, 70));
+
+post({ message: msg({ text: '/miniapp просто-текст' }) });
+check('мусор вместо адреса отклонён', /не похоже на адрес/i.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 60));
+check('свойство не записано мусором', !M.scriptProps.MINIAPP_URL);
+
+post({ message: msg({ text: '/miniapp https://primer.vercel.app/' }) });
+check('адрес сохранён в свойствах скрипта',
+  M.scriptProps.MINIAPP_URL === 'https://primer.vercel.app/', String(M.scriptProps.MINIAPP_URL));
+check('бот подтвердил', /сохранён/i.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 60));
+
+post({ message: msg({ text: '/miniapp' }) });
+check('теперь команда показывает текущий адрес',
+  sent[sent.length - 1].text.includes('primer.vercel.app'), sent[sent.length - 1].text.slice(0, 70));
+
 // --- Идентификаторы записей --------------------------------------------------
 console.log('\n=== Идентификаторы записей ===');
 

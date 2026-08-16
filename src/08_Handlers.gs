@@ -137,6 +137,9 @@ function handleCommand_(message, text) {
     case '/name':
       handleAuthorName_(message, text);
       return;
+    case '/miniapp':
+      handleMiniAppUrl_(message, text);
+      return;
     case '/whoami':
     case '/id':
       // Нужна, чтобы узнать айди общего чата для месячного отчёта.
@@ -203,6 +206,42 @@ function handleAuthorName_(message, text) {
     'Поменять можно этой же командой.</i>');
 
   tgSend_(chatId, lines.join('\n'));
+}
+
+/**
+ * Адрес мини-приложения.
+ *
+ * Хранится в свойствах скрипта, а не в коде: у каждой установки он свой.
+ * Задаётся отсюда, из чата, чтобы не лезть в редактор Apps Script —
+ * там это четыре экрана вглубь и легко ошибиться в имени свойства.
+ */
+function handleMiniAppUrl_(message, text) {
+  var chatId = message.chat.id;
+  var url = String(text || '').replace(/^\/\S+\s*/, '').trim();
+  var current = scriptProp_('MINIAPP_URL');
+
+  if (!url) {
+    tgSend_(chatId, current
+      ? 'Адрес мини-приложения: <code>' + escapeHtml_(current) + '</code>\n\n' +
+        '<i>Поменять: /miniapp и адрес через пробел.</i>'
+      : 'Адрес мини-приложения не задан.\n\n' +
+        'Если развернули страницу на Vercel, пришлите:\n' +
+        '<code>/miniapp https://ваш-проект.vercel.app/</code>');
+    return;
+  }
+
+  if (!/^https:\/\/[^\s]+$/i.test(url)) {
+    tgSend_(chatId, 'Это не похоже на адрес. Нужен полный адрес страницы, ' +
+      'начинающийся с <code>https://</code>');
+    return;
+  }
+
+  PropertiesService.getScriptProperties().setProperty('MINIAPP_URL', url);
+  logEvent_('Задан адрес мини-приложения', { url: url, user: userDisplayName_(message.from) });
+
+  var result = setMiniAppButton();
+  tgSend_(chatId, 'Адрес мини-приложения сохранён:\n<code>' + escapeHtml_(url) + '</code>\n\n' +
+    '<i>' + escapeHtml_(shorten_(String(result), 300)) + '</i>');
 }
 
 // ---------------------------------------------------------------------------
