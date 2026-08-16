@@ -1675,16 +1675,33 @@ check('о смене версии узнали оба', sent.length === beforeAn
   'сообщений: ' + (sent.length - beforeAnnounce));
 check('сказано, какая версия', new RegExp(ctx.BOT_VERSION).test(sent[sent.length - 1].text),
   sent[sent.length - 1].text.slice(0, 80));
+check('список изменений взят из кода, а не из сети',
+  ctx.BOT_CHANGES.length > 0 &&
+  sent[sent.length - 1].text.indexOf(ctx.BOT_CHANGES[0].slice(0, 30)) !== -1,
+  sent[sent.length - 1].text.slice(0, 160));
 
 const afterAnnounce = sent.length;
 call('announceVersionChange_');
 check('дважды не объявляет', sent.length === afterAnnounce);
 
+// Даже без доступа к GitHub рассказ об изменениях должен состояться
+M.setWebResponder(() => ({ code: 500, body: '' }));
+M.scriptProps.RUNNING_VERSION = '0.0.1';
+const beforeOffline = sent.length;
+call('announceVersionChange_');
+check('объявление работает и без сети', sent.length === beforeOffline + 2,
+  'сообщений: ' + (sent.length - beforeOffline));
+check('изменения на месте',
+  sent[sent.length - 1].text.indexOf(ctx.BOT_CHANGES[0].slice(0, 30)) !== -1,
+  sent[sent.length - 1].text.slice(0, 160));
+M.setWebResponder(updateWeb);
+
 delete M.scriptProps.RUNNING_VERSION;
+const beforeFresh = sent.length;
 call('announceVersionChange_');
 check('в свежей установке молчит, только запоминает версию',
-  M.scriptProps.RUNNING_VERSION === ctx.BOT_VERSION && sent.length === afterAnnounce,
-  M.scriptProps.RUNNING_VERSION);
+  M.scriptProps.RUNNING_VERSION === ctx.BOT_VERSION && sent.length === beforeFresh,
+  M.scriptProps.RUNNING_VERSION + ', сообщений: ' + (sent.length - beforeFresh));
 
 
 console.log('\n=== Самопроверка ===');

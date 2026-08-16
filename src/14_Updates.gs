@@ -280,8 +280,10 @@ function announceVersionChange_() {
 
   PropertiesService.getScriptProperties().setProperty(PROP_RUNNING_VERSION, BOT_VERSION);
 
-  var latest = fetchLatestVersion_();
-  var changes = latest && latest.version === BOT_VERSION ? (latest.changes || []) : [];
+  // Список берём из кода, а не с GitHub: рассказ бота о самом себе не должен
+  // зависеть от сети, а репозиторий сразу после выпуска ещё отдаёт из кэша
+  // прежнюю версию — список оказался бы пустым
+  var changes = typeof BOT_CHANGES === 'undefined' ? [] : BOT_CHANGES;
 
   var lines = ['✨ <b>Бот обновился</b> — версия ' + escapeHtml_(BOT_VERSION)];
   if (changes.length) {

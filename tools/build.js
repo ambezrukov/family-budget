@@ -9,6 +9,11 @@ const DIST = path.join(__dirname, '..', 'dist');
 
 if (!fs.existsSync(DIST)) fs.mkdirSync(DIST);
 
+// Список изменений вшивается в код: рассказ бота о самом себе не должен
+// зависеть от сети, да и GitHub отдаёт свежий version.json не сразу —
+// он кэширует файлы на несколько минут
+writeChangesFile();
+
 const files = fs.readdirSync(SRC).filter(f => f.endsWith('.gs')).sort();
 
 const header = [
@@ -46,13 +51,41 @@ fs.copyFileSync(path.join(SRC, 'appsscript.json'), path.join(DIST, 'appsscript.j
 // и по нему же показывают владельцу, что именно изменилось.
 writeVersionFile(bundle);
 
-function writeVersionFile(code) {
-  const version = (code.match(/var BOT_VERSION = '([^']+)'/) || [])[1];
-  if (!version) {
-    console.error('В коде не найдена BOT_VERSION — version.json не обновлён');
-    process.exit(1);
-  }
+/**
+ * Собирает src/15_Changes.gs — версия и её изменения прямо в коде.
+ * Файл автоматический, править руками нечего: всё берётся из CHANGELOG.md.
+ */
+function writeChangesFile() {
+  const config = fs.readFileSync(path.join(SRC, '00_Config.gs'), 'utf8');
+  const version = (config.match(/var BOT_VERSION = '([^']+)'/) || [])[1];
+  if (!version) return;
 
+  const { changes, date } = readChangelog(version);
+
+  const body = [
+    '/**',
+    ' * 15_Changes.gs — что нового в этой версии.',
+    ' *',
+    ' * Файл собирается автоматически из CHANGELOG.md (node tools/build.js).',
+    ' * Править руками не нужно: при следующей сборке всё перезапишется.',
+    ' *',
+    ' * Список лежит в коде, а не берётся с GitHub, потому что бот рассказывает',
+    ' * о нём сразу после обновления — когда репозиторий ещё отдаёт из кэша',
+    ' * прежнюю версию, а сети может не быть вовсе.',
+    ' */',
+    '',
+    'var BOT_VERSION_DATE = ' + JSON.stringify(date) + ';',
+    '',
+    'var BOT_CHANGES = [',
+    changes.map(line => '  ' + JSON.stringify(line)).join(',\n'),
+    '];',
+    ''
+  ].join('\n');
+
+  fs.writeFileSync(path.join(SRC, '15_Changes.gs'), body, 'utf8');
+}
+
+function readChangelog(version) {
   const changelog = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
   const section = changelog.split(/^## /m).find(part => part.trim().startsWith(version));
 
@@ -74,9 +107,21 @@ function writeVersionFile(code) {
     }
   });
 
+  return { changes, date: (section.match(/—\s*([\d.]+)/) || [])[1] || '' };
+}
+
+function writeVersionFile(code) {
+  const version = (code.match(/var BOT_VERSION = '([^']+)'/) || [])[1];
+  if (!version) {
+    console.error('В коде не найдена BOT_VERSION — version.json не обновлён');
+    process.exit(1);
+  }
+
+  const { changes, date } = readChangelog(version);
+
   fs.writeFileSync(path.join(DIST, 'version.json'), JSON.stringify({
     version: version,
-    date: (section.match(/—\s*([\d.]+)/) || [])[1] || '',
+    date: date,
     changes: changes
   }, null, 2) + '\n', 'utf8');
 }
