@@ -1,24 +1,30 @@
 /**
- * 14_Updates.gs — уведомления о новых версиях и обновление по кнопке.
+ * 14_Updates.gs — уведомления о новых версиях.
  *
  * Зачем. Код живёт копией в проекте каждой семьи. Автор правит свой
  * репозиторий, а чужие установки об этом не знают — и остаются со старым
  * ботом навсегда, потому что писать каждому владельцу никто не станет.
  *
  * Как. Раз в неделю бот сверяет свою версию с dist/version.json на GitHub.
- * Вышла новее — пишет владельцу, что изменилось, и предлагает кнопку.
- * Само по себе ничего не ставится: обновление меняет код, который работает
- * с семейными деньгами, и решение остаётся за человеком.
+ * Вышла новее — пишет ответственному, что изменилось, и по кнопке присылает
+ * файл с новым кодом и три шага, что с ним сделать.
  *
- * Обновление идёт через Apps Script API: скрипт переписывает сам себя.
- * Перед заменой сохраняется версия «до обновления» — если новое окажется
- * сломанным, в редакторе Apps Script есть история, откуда можно вернуться.
+ * Почему бот не ставит обновление сам. Пробовали: Apps Script не выдаёт
+ * скрипту право переписывать собственный код — разрешение в манифесте
+ * остаётся просьбой, а токен приходит без него. Обойти это можно только
+ * отдельным проектом Google Cloud, и тогда установка для обычной семьи
+ * вырастает вдвое. Полминуты ручной работы раз в месяц того не стоят.
+ *
+ * Кому писать. Заменить код может лишь владелец таблицы — у остальных
+ * доступа к редактору нет. Поэтому предупреждение идёт одному человеку,
+ * а когда обновление встанет, бот сам расскажет остальным, что нового.
  */
-
-var SCRIPT_API = 'https://script.googleapis.com/v1/projects/';
 
 // О какой версии уже сообщали — чтобы не напоминать каждую неделю об одном
 var PROP_UPDATE_NOTIFIED = 'UPDATE_NOTIFIED_VERSION';
+
+// Какая версия работала в прошлый раз — по ней видно, что код обновили
+var PROP_RUNNING_VERSION = 'RUNNING_VERSION';
 
 /**
  * Адрес, откуда берутся обновления. У форка он свой.
@@ -26,6 +32,21 @@ var PROP_UPDATE_NOTIFIED = 'UPDATE_NOTIFIED_VERSION';
 function updateSource_() {
   var source = scriptProp_('UPDATE_SOURCE') || UPDATE_SOURCE_DEFAULT;
   return source.charAt(source.length - 1) === '/' ? source : source + '/';
+}
+
+/**
+ * Кому писать про обновления.
+ *
+ * Настройка «Кто обновляет бота» — телеграм-айди того, у кого есть доступ
+ * к редактору Apps Script. Не задана — берём первого из разрешённых:
+ * обычно это тот, кто бота и ставил.
+ */
+function updateManagerId_() {
+  var configured = String(setting_('Кто обновляет бота', '')).trim();
+  if (configured) return configured;
+
+  var users = allowedUserIds_();
+  return users.length ? users[0] : '';
 }
 
 /**
@@ -65,28 +86,48 @@ function fetchLatestVersion_() {
 }
 
 /**
- * Еженедельная проверка. Запускается триггером, а также вручную командой.
+ * Проверка обновлений. Запускается триггером раз в неделю и командой /obnovit.
  *
- * silent = true — молчать, если обновлений нет (так работает триггер:
- * «всё по-старому» каждую неделю никому не нужно).
+ * silent = true — молчать, когда всё по-старому: еженедельное «обновлений нет»
+ * никому не нужно. chatId — куда отвечать на ручную проверку.
  */
-function checkForUpdates(silent) {
+function checkForUpdates(silent, chatId) {
+  var reply = chatId || updateManagerId_();
   var latest = fetchLatestVersion_();
+
   if (!latest || !latest.version) {
-    if (!silent) notifyOwners_('Не смог проверить обновления — репозиторий не ответил.');
+    if (!silent && reply) tgSend_(reply, 'Не смог проверить обновления — репозиторий не ответил.');
     return null;
   }
 
   if (compareVersions_(latest.version, BOT_VERSION) <= 0) {
-    if (!silent) {
-      notifyOwners_('Обновлений нет, у вас последняя версия: <b>' + escapeHtml_(BOT_VERSION) + '</b>');
+    if (!silent && reply) {
+      tgSend_(reply, 'Обновлений нет, у вас последняя версия: <b>' + escapeHtml_(BOT_VERSION) + '</b>');
     }
     return null;
   }
 
-  // Об одной и той же версии напоминаем только раз
+  // Об одной и той же версии напоминаем один раз
   if (silent && scriptProp_(PROP_UPDATE_NOTIFIED) === latest.version) return latest;
 
+  var target = chatId || updateManagerId_();
+  if (!target) return latest;
+
+  tgSend_(target, updateAnnouncement_(latest), [[
+    { text: '⬇️ Как обновиться', callback_data: 'update:' + latest.version },
+    { text: 'Позже', callback_data: 'updatelater:' + latest.version }
+  ]]);
+
+  PropertiesService.getScriptProperties().setProperty(PROP_UPDATE_NOTIFIED, latest.version);
+  logEvent_('Найдено обновление', { было: BOT_VERSION, стало: latest.version, кому: target });
+
+  return latest;
+}
+
+/**
+ * Текст сообщения о новой версии.
+ */
+function updateAnnouncement_(latest) {
   var lines = ['🔄 <b>Вышло обновление</b>',
     'У вас ' + escapeHtml_(BOT_VERSION) + ', вышла ' + escapeHtml_(latest.version) +
     (latest.date ? ' от ' + escapeHtml_(latest.date) : ''), ''];
@@ -96,87 +137,69 @@ function checkForUpdates(silent) {
   });
 
   lines.push('');
-  lines.push('Обновление заменит код бота на свежий. Записи и настройки не тронет.');
+  lines.push('<i>Обновление занимает полминуты и делается в редакторе таблицы. ' +
+    'Записи и настройки не тронутся.</i>');
 
-  var keyboard = [[
-    { text: '⬇️ Обновить сейчас', callback_data: 'update:' + latest.version },
-    { text: 'Позже', callback_data: 'updatelater:' + latest.version }
-  ]];
-
-  notifyOwners_(lines.join('\n'), keyboard);
-  PropertiesService.getScriptProperties().setProperty(PROP_UPDATE_NOTIFIED, latest.version);
-  logEvent_('Найдено обновление', { было: BOT_VERSION, стало: latest.version });
-
-  return latest;
-}
-
-/**
- * Пишет всем разрешённым пользователям: обновление касается всей семьи.
- */
-function notifyOwners_(text, keyboard) {
-  allowedUserIds_().forEach(function (id) {
-    tgSend_(id, text, keyboard);
-  });
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
-// Установка обновления
+// Как обновиться
 // ---------------------------------------------------------------------------
 
 /**
- * Скачивает свежий код и переписывает им проект.
+ * Присылает новый код файлом и объясняет, что с ним делать.
  *
- * Возвращает {ok, message}. Ошибки объясняются по-человечески: чаще всего
- * дело в выключенном Apps Script API, и человеку нужно знать, куда нажать.
+ * Файлом, а не ссылкой: копировать двести килобайт кода из браузера на
+ * телефоне неудобно, а файл открывается и выделяется целиком.
  */
-function applyUpdate_() {
+function sendUpdateInstructions_(chatId) {
   var latest = fetchLatestVersion_();
   if (!latest || !latest.version) {
-    return { ok: false, message: 'Не смог получить сведения о новой версии.' };
+    tgSend_(chatId, 'Не смог получить сведения о новой версии. Попробуйте позже.');
+    return false;
   }
 
   var code = fetchUpdateFile_('dist/Код.gs');
-  if (!code) {
-    return { ok: false, message: 'Не смог скачать новый код с GitHub.' };
+
+  // Проверяем скачанное: обрыв связи или страница-заглушка вместо файла
+  // отправили бы человека вставлять в редактор мусор
+  if (!code || code.length < 50000 || code.indexOf('function doPost') === -1) {
+    tgSend_(chatId, 'Не смог скачать новый код. Он всегда лежит здесь:\n' +
+      updateSource_() + 'dist/Код.gs');
+    return false;
   }
 
-  // Проверяем скачанное, прежде чем менять рабочий код: обрыв связи или
-  // страница-заглушка вместо файла оставили бы семью без бота
   var declared = (code.match(/var BOT_VERSION = '([^']+)'/) || [])[1];
-  if (!declared || declared !== latest.version) {
-    return { ok: false, message: 'Скачанный код не той версии — обновление отменил.' };
-  }
-  if (code.length < 50000 || code.indexOf('function doPost') === -1) {
-    return { ok: false, message: 'Скачанный код выглядит неполным — обновление отменил.' };
+  if (declared !== latest.version) {
+    tgSend_(chatId, 'Скачанный код не той версии — лучше обновиться вручную с GitHub.');
+    return false;
   }
 
-  var scriptId = ScriptApp.getScriptId();
-  var manifest = updatedManifest_(code);
-  if (!manifest) {
-    return { ok: false, message: 'Не смог прочитать настройки проекта — обновление отменил.' };
-  }
+  tgSendDocument_(chatId, Utilities.newBlob(code, 'text/plain', 'Код.gs'),
+    'Код версии ' + latest.version);
 
-  // Точка возврата: версия со старым кодом остаётся в истории Apps Script
-  createProjectVersion_(scriptId, 'перед обновлением до ' + latest.version);
+  tgSend_(chatId, [
+    '<b>Как обновиться</b> — три шага, полминуты:',
+    '',
+    '1. Откройте таблицу → меню <b>Расширения → Apps Script</b>',
+    '2. Откройте файл <b>Код</b> (или <b>Код.gs</b>), выделите всё (Ctrl+A) ' +
+      'и вставьте содержимое присланного файла',
+    '3. Сохраните (Ctrl+S)',
+    '',
+    'Если бот отвечает по вебхуку, нужен ещё один шаг: ' +
+    '<b>Начать развёртывание → Управление развёртываниями</b> → карандаш → ' +
+    '<b>Версия: Новая версия</b> → <b>Развернуть</b>. Без этого телеграм ' +
+    'продолжит говорить со старым кодом.',
+    '',
+    '<i>Прежний код никуда не денется: в редакторе есть «История версий», ' +
+    'откуда его можно вернуть.</i>',
+    '',
+    'Когда закончите, напишите /versiya — проверим, что встало новое.'
+  ].join('\n'));
 
-  var written = writeProjectContent_(scriptId, code, manifest);
-  if (!written.ok) return written;
-
-  // Вебхук исполняет развёрнутую версию, а не последнюю сохранённую,
-  // поэтому мало залить код — нужно ещё передвинуть развёртывания
-  var version = createProjectVersion_(scriptId, 'обновление до ' + latest.version);
-  var moved = version ? updateDeployments_(scriptId, version) : 0;
-
-  logEvent_('Обновление установлено', {
-    было: BOT_VERSION, стало: latest.version, развёртываний: moved
-  });
-
-  return {
-    ok: true,
-    version: latest.version,
-    deployments: moved,
-    message: 'Обновил до ' + latest.version + '.'
-  };
+  logEvent_('Отправлены указания по обновлению', { версия: latest.version, кому: chatId });
+  return true;
 }
 
 /**
@@ -196,220 +219,48 @@ function fetchUpdateFile_(path) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// «Бота обновили»
+// ---------------------------------------------------------------------------
+
 /**
- * Манифест для обновлённого проекта.
+ * Замечает, что код заменили на более новый, и рассказывает об этом всем.
  *
- * Берём новый — в нём могут быть новые разрешения, — но часовой пояс
- * оставляем свой: он у каждой семьи свой и к версии кода отношения не имеет.
+ * Обновление ставит один человек, а пользуются ботом все: жена не должна
+ * узнавать о новых возможностях случайно. Проверка дешёвая — чтение одного
+ * свойства, — поэтому делается при каждом сообщении.
  */
-function updatedManifest_(code) {
-  var fresh = fetchUpdateFile_('dist/appsscript.json');
-  if (!fresh) return null;
+function announceVersionChange_() {
+  var known = scriptProp_(PROP_RUNNING_VERSION);
 
-  try {
-    var manifest = JSON.parse(fresh);
-    var current = currentProjectFiles_();
-    var mine = current ? current.filter(function (file) { return file.name === 'appsscript'; })[0] : null;
-
-    if (mine) {
-      var old = JSON.parse(mine.source);
-      if (old.timeZone) manifest.timeZone = old.timeZone;
-      if (old.webapp) manifest.webapp = old.webapp;
-    }
-
-    return JSON.stringify(manifest, null, 2);
-  } catch (err) {
-    logEvent_('Не разобрался в манифесте', String(err));
-    return null;
+  if (!known) {
+    // Первый запуск после установки: просто запоминаем, никого не тревожим
+    PropertiesService.getScriptProperties().setProperty(PROP_RUNNING_VERSION, BOT_VERSION);
+    return;
   }
-}
 
-/**
- * Текущее содержимое проекта через Apps Script API.
- */
-function currentProjectFiles_() {
-  try {
-    var response = UrlFetchApp.fetch(SCRIPT_API + ScriptApp.getScriptId() + '/content', {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
+  if (compareVersions_(BOT_VERSION, known) <= 0) return;
+
+  PropertiesService.getScriptProperties().setProperty(PROP_RUNNING_VERSION, BOT_VERSION);
+
+  var latest = fetchLatestVersion_();
+  var changes = latest && latest.version === BOT_VERSION ? (latest.changes || []) : [];
+
+  var lines = ['✨ <b>Бот обновился</b> — версия ' + escapeHtml_(BOT_VERSION)];
+  if (changes.length) {
+    lines.push('');
+    changes.slice(0, 12).forEach(function (change) {
+      lines.push('• ' + escapeHtml_(String(change)));
     });
-    if (response.getResponseCode() !== 200) return null;
-    return JSON.parse(response.getContentText()).files || null;
-  } catch (err) {
-    return null;
   }
-}
+  lines.push('');
+  lines.push('<i>Что умею — /spravka</i>');
 
-/**
- * Заменяет содержимое проекта: один файл кода и манифест.
- *
- * Если код был разложен по нескольким файлам, они схлопнутся в один — на
- * работу это не влияет, Apps Script всё равно склеивает их при запуске.
- */
-function writeProjectContent_(scriptId, code, manifest) {
-  var payload = {
-    files: [
-      { name: 'appsscript', type: 'JSON', source: manifest },
-      { name: 'Код', type: 'SERVER_JS', source: code }
-    ]
-  };
+  allowedUserIds_().forEach(function (id) {
+    tgSend_(id, lines.join('\n'));
+  });
 
-  try {
-    var response = UrlFetchApp.fetch(SCRIPT_API + scriptId + '/content', {
-      method: 'put',
-      contentType: 'application/json',
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-
-    var code_ = response.getResponseCode();
-    if (code_ === 200) return { ok: true };
-
-    var body = response.getContentText();
-    logEvent_('Обновление не записалось', { code: code_, body: body.substring(0, 800) });
-
-    if (code_ === 403 && body.indexOf('Apps Script API') !== -1) {
-      return {
-        ok: false,
-        needsApi: true,
-        message: 'Apps Script API выключен — без него бот не может обновить сам себя.'
-      };
-    }
-
-    // Разрешения в манифесте — только запрос. Пока владелец не подтвердит их
-    // в диалоге Google, токен остаётся со старым набором прав, и записать
-    // код нельзя. Это случается ровно один раз, после появления обновлятора.
-    if (code_ === 403 && /SCOPE_INSUFFICIENT|insufficient authentication scopes/i.test(body)) {
-      return {
-        ok: false,
-        needsAuth: true,
-        message: 'У меня пока нет разрешения править собственный код — ' +
-          'его нужно подтвердить один раз вручную.'
-      };
-    }
-
-    return { ok: false, message: 'Google отказал при записи кода (' + code_ + ').' };
-  } catch (err) {
-    logEvent_('Сбой записи обновления', String(err));
-    return { ok: false, message: 'Не получилось записать новый код: ' + err };
-  }
-}
-
-/**
- * Создаёт версию проекта. Возвращает её номер или 0.
- */
-function createProjectVersion_(scriptId, description) {
-  try {
-    var response = UrlFetchApp.fetch(SCRIPT_API + scriptId + '/versions', {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      payload: JSON.stringify({ description: description }),
-      muteHttpExceptions: true
-    });
-    if (response.getResponseCode() !== 200) return 0;
-    return JSON.parse(response.getContentText()).versionNumber || 0;
-  } catch (err) {
-    return 0;
-  }
-}
-
-/**
- * Переводит существующие развёртывания на новую версию.
- * Возвращает, сколько удалось передвинуть.
- */
-function updateDeployments_(scriptId, versionNumber) {
-  var moved = 0;
-
-  try {
-    var list = UrlFetchApp.fetch(SCRIPT_API + scriptId + '/deployments', {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
-    });
-    if (list.getResponseCode() !== 200) return 0;
-
-    var deployments = JSON.parse(list.getContentText()).deployments || [];
-
-    deployments.forEach(function (deployment) {
-      var config = deployment.deploymentConfig || {};
-      // Черновое развёртывание (@HEAD) и так исполняет свежий код
-      if (!deployment.deploymentId || config.versionNumber === undefined) return;
-
-      var response = UrlFetchApp.fetch(SCRIPT_API + scriptId + '/deployments/' + deployment.deploymentId, {
-        method: 'put',
-        contentType: 'application/json',
-        headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-        payload: JSON.stringify({
-          deploymentConfig: {
-            scriptId: scriptId,
-            versionNumber: versionNumber,
-            manifestFileName: 'appsscript',
-            description: config.description || ''
-          }
-        }),
-        muteHttpExceptions: true
-      });
-
-      if (response.getResponseCode() === 200) moved++;
-      else logEvent_('Развёртывание не обновилось', {
-        id: deployment.deploymentId,
-        code: response.getResponseCode()
-      });
-    });
-  } catch (err) {
-    logEvent_('Сбой обновления развёртываний', String(err));
-  }
-
-  return moved;
-}
-
-/**
- * Что бот на самом деле может со своим кодом.
- *
- * Запускается вручную из редактора, когда обновление не ставится. Права
- * в манифесте и права в выданном токене — разные вещи: манифест только просит,
- * а выдаёт их владелец в диалоге согласия. Здесь видно, что вышло на деле.
- *
- * Итог пишется в лист «Лог», чтобы его можно было прочитать не из редактора.
- */
-function checkUpdatePermissions() {
-  var report = { версия: BOT_VERSION };
-
-  try {
-    var token = ScriptApp.getOAuthToken();
-    var info = UrlFetchApp.fetch(
-      'https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(token),
-      { muteHttpExceptions: true }
-    );
-    var scopes = '';
-    if (info.getResponseCode() === 200) {
-      scopes = String(JSON.parse(info.getContentText()).scope || '');
-    }
-    report.естьПравоНаКод = scopes.indexOf('script.projects') !== -1;
-    report.естьПравоНаРазвёртывания = scopes.indexOf('script.deployments') !== -1;
-    report.всеПрава = scopes.replace(/https:\/\/www\.googleapis\.com\/auth\//g, '');
-  } catch (err) {
-    report.токен = String(err);
-  }
-
-  // Проба на чтение: если и она отказывает, дело точно в правах, а не в записи
-  try {
-    var read = UrlFetchApp.fetch(SCRIPT_API + ScriptApp.getScriptId() + '/content', {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
-    });
-    report.чтениеКода = read.getResponseCode();
-    if (read.getResponseCode() !== 200) {
-      report.ответGoogle = read.getContentText().substring(0, 300);
-    }
-  } catch (err) {
-    report.чтениеКода = String(err);
-  }
-
-  logEvent_('Проверка прав на обновление', report);
-  console.log(JSON.stringify(report, null, 2));
-  return report;
+  logEvent_('Объявлено обновление', { было: known, стало: BOT_VERSION });
 }
 
 // ---------------------------------------------------------------------------

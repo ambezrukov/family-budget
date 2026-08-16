@@ -142,7 +142,11 @@ const env = {
   },
   UrlFetchApp: {
     fetch: (url, params) => {
-      const payload = params && params.payload ? JSON.parse(params.payload) : {};
+      // Тело бывает строкой (JSON) и объектом (отправка файла на телеграм)
+      let payload = {};
+      if (params && params.payload) {
+        payload = typeof params.payload === 'string' ? JSON.parse(params.payload) : params.payload;
+      }
       httpLog.push({ url, payload, params });
       let body, code = 200;
       if (url.indexOf('generativelanguage') !== -1 && url.indexOf(':generateContent') === -1) {
@@ -185,6 +189,12 @@ const env = {
         .replace('ss', p(date.getSeconds()));
     },
     base64Encode: bytes => Buffer.from(bytes).toString('base64'),
+    newBlob: (content, type, name) => ({
+      getBytes: () => Buffer.from(String(content), 'utf8'),
+      getContentType: () => type || 'text/plain',
+      getName: () => name || 'blob',
+      getDataAsString: () => String(content)
+    }),
     // Как настоящий UUID: восемь групп hex через дефисы. Форма важна —
     // код берёт из него хвост для идентификатора записи
     getUuid: () => {

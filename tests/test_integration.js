@@ -1568,47 +1568,30 @@ check('версия сравнивается по числам, а не по с�
 
 const freshCode = 'var BOT_VERSION = \'9.9.9\';\n' +
   'function doPost(e) { return null; }\n' + 'x'.repeat(60000);
-const apiCalls = [];
 
-M.setWebResponder((url, params) => {
-  apiCalls.push({ url: url, method: (params && params.method) || 'get' });
-
+const updateWeb = (url) => {
   if (url.indexOf('/dist/version.json') !== -1) {
     return { code: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: '9.9.9', date: '01.01.2027', changes: ['новая штука', 'ещё одна'] }) };
+      body: JSON.stringify({ version: '9.9.9', date: '01.01.2027',
+        changes: ['новая штука', 'ещё одна'] }) };
   }
   if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: freshCode };
-  if (url.indexOf('/dist/appsscript.json') !== -1) {
-    return { code: 200, body: JSON.stringify({ timeZone: 'Europe/Moscow', oauthScopes: ['a'] }) };
-  }
-  if (url.indexOf('script.googleapis.com') !== -1 && url.indexOf('/content') !== -1) {
-    return { code: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: [{ name: 'appsscript', type: 'JSON',
-        source: JSON.stringify({ timeZone: 'Asia/Jerusalem', webapp: { access: 'ANYONE_ANONYMOUS' } }) }] }) };
-  }
-  if (url.indexOf('/versions') !== -1) {
-    return { code: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ versionNumber: 42 }) };
-  }
-  if (url.indexOf('/deployments/') !== -1) return { code: 200, body: '{}' };
-  if (url.indexOf('/deployments') !== -1) {
-    return { code: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deployments: [
-        { deploymentId: 'HEAD-ID', deploymentConfig: { scriptId: 'SCRIPT-TEST-ID' } },
-        { deploymentId: 'REAL-ID', deploymentConfig: { scriptId: 'SCRIPT-TEST-ID', versionNumber: 41 } }
-      ] }) };
-  }
   return { code: 404, body: '' };
-});
+};
+M.setWebResponder(updateWeb);
 
+// Уведомление идёт одному человеку: заменить код может только тот, у кого
+// есть доступ к редактору
 const beforeUpdateMsgs = sent.length;
 const found = call('checkForUpdates', true);
 check('обновление замечено', found && found.version === '9.9.9', JSON.stringify(found));
-check('владельцам ушло сообщение', sent.length > beforeUpdateMsgs,
+check('уведомление ушло одному, а не всем', sent.length === beforeUpdateMsgs + 1,
   'сообщений: ' + (sent.length - beforeUpdateMsgs));
 const updateMsg = sent[sent.length - 1];
+check('получатель — первый из разрешённых', String(updateMsg.chat_id) === '111',
+  String(updateMsg.chat_id));
 check('в сообщении список изменений', /новая штука/.test(updateMsg.text), updateMsg.text.slice(0, 120));
-check('есть кнопка обновления',
+check('есть кнопка «как обновиться»',
   JSON.stringify(updateMsg.reply_markup || {}).includes('update:9.9.9'),
   JSON.stringify(updateMsg.reply_markup || {}).slice(0, 120));
 
@@ -1617,77 +1600,79 @@ call('checkForUpdates', true);
 check('о той же версии второй раз не напоминает', sent.length === afterFirst,
   'добавилось: ' + (sent.length - afterFirst));
 
-// Установка обновления
-apiCalls.length = 0;
-const result = call('applyUpdate_');
-check('обновление применилось', result.ok === true, JSON.stringify(result).slice(0, 120));
-check('код записан через Apps Script API',
-  apiCalls.some(c => c.method === 'put' && c.url.indexOf('/content') !== -1),
-  JSON.stringify(apiCalls.map(c => c.method + ' ' + c.url)).slice(0, 200));
-check('создана точка возврата и версия',
-  apiCalls.filter(c => c.url.indexOf('/versions') !== -1 && c.method === 'post').length === 2,
-  'версий создано: ' + apiCalls.filter(c => c.url.indexOf('/versions') !== -1).length);
-check('развёртывание переведено на новую версию', result.deployments === 1,
-  String(result.deployments));
+// Ответственного можно назначить руками
+for (let r = 1; r <= settings.getLastRow(); r++) {
+  if (settings.getRange(r, 1).getValues()[0][0] === 'Кто обновляет бота') {
+    settings.getRange(r, 2).setValue('222');
+  }
+}
+ctx.SETTINGS_CACHE_ = null;
+check('назначенный ответственный перебивает умолчание',
+  ctx.updateManagerId_() === '222', ctx.updateManagerId_());
+for (let r = 1; r <= settings.getLastRow(); r++) {
+  if (settings.getRange(r, 1).getValues()[0][0] === 'Кто обновляет бота') {
+    settings.getRange(r, 2).setValue('');
+  }
+}
+ctx.SETTINGS_CACHE_ = null;
 
-const written = M.httpLog.filter(h => h.params && h.params.method === 'put' &&
-  String(h.url).indexOf('/content') !== -1).pop();
-const writtenManifest = JSON.parse(JSON.parse(written.params.payload).files[0].source);
-check('часовой пояс семьи сохранён', writtenManifest.timeZone === 'Asia/Jerusalem',
-  writtenManifest.timeZone);
+// Кнопка присылает файл с кодом и указания
+const documents = [];
+M.setTelegramResponder((url, payload) => {
+  if (url.includes('/sendDocument')) { documents.push(payload); return { ok: true, result: {} }; }
+  if (url.includes('/sendMessage')) { sent.push(payload); return { ok: true, result: { message_id: sent.length } }; }
+  if (url.includes('/editMessageText')) { edits.push(payload); return { ok: true, result: {} }; }
+  if (url.includes('/editMessageReplyMarkup')) { edits.push(payload); return { ok: true, result: {} }; }
+  if (url.includes('/getFile')) return { ok: true, result: { file_path: 'voice/file_1.oga' } };
+  if (url.includes('/getMe')) return { ok: true, result: { username: 'test_bot' } };
+  return { ok: true, result: {} };
+});
 
-// Битый или неполный файл ставить нельзя
+post({ callback_query: { id: 'up1', from: HUSBAND, data: 'update:9.9.9',
+  message: { message_id: 500, chat: { id: 555 }, text: 'Вышло обновление' } } });
+check('код прислан файлом', documents.length === 1, 'файлов: ' + documents.length);
+check('в подписи указана версия', /9\.9\.9/.test(documents[0].caption || ''), documents[0].caption);
+check('объяснено, что делать с файлом',
+  /Расширения → Apps Script/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 120));
+check('предупреждение про развёртывание есть',
+  /развёртывани/i.test(sent[sent.length - 1].text));
+
+// Обрывок вместо кода отправлять нельзя — человек вставит мусор в редактор
 M.setWebResponder((url) => {
   if (url.indexOf('/dist/version.json') !== -1) {
     return { code: 200, body: JSON.stringify({ version: '9.9.9', changes: [] }) };
   }
-  if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: '<html>404 not found</html>' };
+  if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: '<html>404</html>' };
   return { code: 404, body: '' };
 });
-const broken = call('applyUpdate_');
-check('обрывок вместо кода отклонён', broken.ok === false, JSON.stringify(broken));
-check('причина объяснена', /не той версии|неполным/.test(broken.message), broken.message);
+const beforeBrokenCode = documents.length;
+const brokenSent = call('sendUpdateInstructions_', 555);
+check('обрывок вместо кода не отправляется', brokenSent === false && documents.length === beforeBrokenCode,
+  'файлов: ' + (documents.length - beforeBrokenCode));
+check('дан запасной адрес', /dist\/Код\.gs/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 120));
 
-// Выключенный Apps Script API — самая частая причина отказа
-M.setWebResponder((url, params) => {
-  if (url.indexOf('/dist/version.json') !== -1) {
-    return { code: 200, body: JSON.stringify({ version: '9.9.9', changes: [] }) };
-  }
-  if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: freshCode };
-  if (url.indexOf('/dist/appsscript.json') !== -1) return { code: 200, body: '{"timeZone":"UTC"}' };
-  if (url.indexOf('/content') !== -1 && params && params.method === 'put') {
-    return { code: 403, body: '{"error":{"message":"User has not enabled the Apps Script API"}}' };
-  }
-  if (url.indexOf('/content') !== -1) return { code: 200, body: '{"files":[]}' };
-  if (url.indexOf('/versions') !== -1) return { code: 200, body: '{"versionNumber":1}' };
-  return { code: 404, body: '' };
-});
-const noApi = call('applyUpdate_');
-check('выключенный Apps Script API распознан', noApi.needsApi === true, JSON.stringify(noApi));
+// После обновления бот сам рассказывает всем, что появилось нового
+M.setWebResponder(updateWeb);
+M.scriptProps.RUNNING_VERSION = '0.0.1';
+const beforeAnnounce = sent.length;
+call('announceVersionChange_');
+check('о смене версии узнали оба', sent.length === beforeAnnounce + 2,
+  'сообщений: ' + (sent.length - beforeAnnounce));
+check('сказано, какая версия', new RegExp(ctx.BOT_VERSION).test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 80));
 
-// Разрешения в манифесте — только запрос: пока владелец не подтвердит их
-// в диалоге Google, токен остаётся со старыми правами
-M.setWebResponder((url, params) => {
-  if (url.indexOf('/dist/version.json') !== -1) {
-    return { code: 200, body: JSON.stringify({ version: '9.9.9', changes: [] }) };
-  }
-  if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: freshCode };
-  if (url.indexOf('/dist/appsscript.json') !== -1) return { code: 200, body: '{"timeZone":"UTC"}' };
-  if (url.indexOf('/content') !== -1 && params && params.method === 'put') {
-    return { code: 403, body: JSON.stringify({ error: {
-      code: 403, message: 'Request had insufficient authentication scopes.',
-      status: 'PERMISSION_DENIED',
-      details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }]
-    } }) };
-  }
-  if (url.indexOf('/content') !== -1) return { code: 200, body: '{"files":[]}' };
-  if (url.indexOf('/versions') !== -1) return { code: 200, body: '{"versionNumber":1}' };
-  return { code: 404, body: '' };
-});
-const noAuth = call('applyUpdate_');
-check('неподтверждённые разрешения распознаны', noAuth.needsAuth === true, JSON.stringify(noAuth));
-check('пользователю сказано, что делать', /подтвердить один раз/.test(noAuth.message),
-  noAuth.message);
+const afterAnnounce = sent.length;
+call('announceVersionChange_');
+check('дважды не объявляет', sent.length === afterAnnounce);
+
+delete M.scriptProps.RUNNING_VERSION;
+call('announceVersionChange_');
+check('в свежей установке молчит, только запоминает версию',
+  M.scriptProps.RUNNING_VERSION === ctx.BOT_VERSION && sent.length === afterAnnounce,
+  M.scriptProps.RUNNING_VERSION);
+
 
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');

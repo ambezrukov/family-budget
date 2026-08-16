@@ -14,6 +14,14 @@ function handleUpdate_(update) {
     return; // телеграм прислал тот же апдейт повторно
   }
 
+  // Код мог смениться с прошлого раза: обновление ставит один человек,
+  // а знать о новом должны все
+  try {
+    announceVersionChange_();
+  } catch (err) {
+    logEvent_('Сбой объявления версии', String(err));
+  }
+
   if (update.callback_query) {
     handleCallback_(update.callback_query);
     return;
@@ -140,7 +148,7 @@ function handleCommand_(message, text) {
     case '/obnovit':
     case '/update':
       tgSend_(chatId, 'Смотрю, есть ли обновления…');
-      checkForUpdates(false);
+      checkForUpdates(false, chatId);
       return;
     case '/versiya':
     case '/version':
@@ -1518,40 +1526,11 @@ function handleCallback_(callback) {
     return;
   }
 
-  // Обновление бота
+  // Как обновиться: файл с кодом и указания
   if (data.indexOf('update:') === 0) {
-    tgAnswerCallback_(callback.id, 'Обновляю…');
-    tgEditText_(chatId, messageId, '⏳ Обновляюсь. Это займёт несколько секунд.', []);
-
-    var result = applyUpdate_();
-
-    if (result.ok) {
-      tgEditText_(chatId, messageId,
-        '✅ Обновился до версии <b>' + escapeHtml_(result.version) + '</b>.\n' +
-        (result.deployments
-          ? 'Развёртываний переведено на новый код: ' + result.deployments + '.'
-          : '<i>Развёртывания не тронуты — если бот отвечает по вебхуку, ' +
-            'обновите развёртывание вручную.</i>') + '\n\n' +
-        '<i>Если что-то пойдёт не так, вернуться к прежнему коду можно в редакторе ' +
-        'Apps Script: «История версий».</i>', []);
-    } else {
-      tgEditText_(chatId, messageId,
-        '⚠️ Обновиться не вышло.\n' + escapeHtml_(result.message) +
-        (result.needsApi
-          ? '\n\nВключите его: откройте <b>script.google.com/home/usersettings</b> ' +
-            'и переведите «Google Apps Script API» в положение «включено». ' +
-            'Потом нажмите /obnovit ещё раз.'
-          : result.needsAuth
-            ? '\n\nЭто делается один раз:\n' +
-              '1. Откройте таблицу → меню <b>Расширения → Apps Script</b>\n' +
-              '2. В списке функций выберите <b>checkForUpdates</b> и нажмите <b>Выполнить</b>\n' +
-              '3. Google спросит разрешения — согласитесь ' +
-              '(если он предупредит, что приложение не проверено, нажмите ' +
-              '«Дополнительные настройки» → «Перейти к проекту»)\n\n' +
-              'После этого вернитесь сюда и нажмите /obnovit ещё раз.'
-            : '\n\n<i>Подробности — в листе «Лог». Обновиться можно и руками, ' +
-              'заменив код в редакторе Apps Script.</i>'), []);
-    }
+    tgAnswerCallback_(callback.id, 'Присылаю');
+    tgEditKeyboard_(chatId, messageId, []);
+    sendUpdateInstructions_(chatId);
     return;
   }
 

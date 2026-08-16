@@ -77,6 +77,32 @@ function tgAnswerCallback_(callbackId, text) {
   });
 }
 
+/**
+ * Отправка файла. Нужна, чтобы прислать новый код бота прямо в чат:
+ * человеку остаётся открыть его и вставить в редактор.
+ */
+function tgSendDocument_(chatId, blob, caption) {
+  try {
+    var response = UrlFetchApp.fetch(tgApiUrl_('sendDocument'), {
+      method: 'post',
+      payload: {
+        chat_id: String(chatId),
+        caption: String(caption || '').substring(0, 1000),
+        parse_mode: 'HTML',
+        document: blob
+      },
+      muteHttpExceptions: true
+    });
+
+    var data = JSON.parse(response.getContentText());
+    if (!data.ok) logEvent_('Файл не отправился', { response: response.getContentText().substring(0, 500) });
+    return data;
+  } catch (err) {
+    logEvent_('Сбой отправки файла', String(err));
+    return { ok: false };
+  }
+}
+
 function tgSendChatAction_(chatId, action) {
   return tgCall_('sendChatAction', { chat_id: chatId, action: action || 'typing' });
 }
