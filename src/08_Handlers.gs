@@ -137,6 +137,16 @@ function handleCommand_(message, text) {
     case '/name':
       handleAuthorName_(message, text);
       return;
+    case '/obnovit':
+    case '/update':
+      tgSend_(chatId, 'Смотрю, есть ли обновления…');
+      checkForUpdates(false);
+      return;
+    case '/versiya':
+    case '/version':
+      tgSend_(chatId, 'Версия бота: <b>' + escapeHtml_(BOT_VERSION) + '</b>\n' +
+        '<i>Проверить обновления — /obnovit</i>');
+      return;
     case '/avtory':
     case '/authors':
       handleAuthorsList_(message, text);
@@ -1505,6 +1515,42 @@ function handleCallback_(callback) {
     stashKeyboard_(messageId, message.reply_markup ? message.reply_markup.inline_keyboard : null);
     var catRecord = readExpenseById_(catId);
     tgEditKeyboard_(chatId, messageId, categoriesKeyboard_(catId, catRecord ? catRecord.kind : 'расход'));
+    return;
+  }
+
+  // Обновление бота
+  if (data.indexOf('update:') === 0) {
+    tgAnswerCallback_(callback.id, 'Обновляю…');
+    tgEditText_(chatId, messageId, '⏳ Обновляюсь. Это займёт несколько секунд.', []);
+
+    var result = applyUpdate_();
+
+    if (result.ok) {
+      tgEditText_(chatId, messageId,
+        '✅ Обновился до версии <b>' + escapeHtml_(result.version) + '</b>.\n' +
+        (result.deployments
+          ? 'Развёртываний переведено на новый код: ' + result.deployments + '.'
+          : '<i>Развёртывания не тронуты — если бот отвечает по вебхуку, ' +
+            'обновите развёртывание вручную.</i>') + '\n\n' +
+        '<i>Если что-то пойдёт не так, вернуться к прежнему коду можно в редакторе ' +
+        'Apps Script: «История версий».</i>', []);
+    } else {
+      tgEditText_(chatId, messageId,
+        '⚠️ Обновиться не вышло.\n' + escapeHtml_(result.message) +
+        (result.needsApi
+          ? '\n\nВключите его: откройте <b>script.google.com/home/usersettings</b> ' +
+            'и переведите «Google Apps Script API» в положение «включено». ' +
+            'Потом нажмите /obnovit ещё раз.'
+          : '\n\n<i>Подробности — в листе «Лог». Обновиться можно и руками, ' +
+            'заменив код в редакторе Apps Script.</i>'), []);
+    }
+    return;
+  }
+
+  // «Позже» — просто убираем кнопки, напомним при следующей версии
+  if (data.indexOf('updatelater:') === 0) {
+    tgAnswerCallback_(callback.id, 'Хорошо, напомню при следующей версии');
+    tgEditKeyboard_(chatId, messageId, []);
     return;
   }
 

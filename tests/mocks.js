@@ -200,10 +200,15 @@ const env = {
     getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} })
   },
   ScriptApp: {
+    getScriptId: () => 'SCRIPT-TEST-ID',
+    getOAuthToken: () => 'oauth-test-token',
+    WeekDay: { MONDAY: 'MONDAY' },
     getProjectTriggers: () => triggers.slice(),
     newTrigger: (handler) => ({
       timeBased: function () { return this; },
       onMonthDay: function () { return this; },
+      onWeekDay: function () { return this; },
+      everyWeeks: function () { return this; },
       atHour: function () { return this; },
       everyMinutes: function () { return this; },
       create: function () {

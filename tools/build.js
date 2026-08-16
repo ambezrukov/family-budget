@@ -42,6 +42,45 @@ const bundle = header + body;
 fs.writeFileSync(path.join(DIST, 'Код.gs'), bundle, 'utf8');
 fs.copyFileSync(path.join(SRC, 'appsscript.json'), path.join(DIST, 'appsscript.json'));
 
+// Метка версии для чужих установок: их боты сверяются с этим файлом на GitHub
+// и по нему же показывают владельцу, что именно изменилось.
+writeVersionFile(bundle);
+
+function writeVersionFile(code) {
+  const version = (code.match(/var BOT_VERSION = '([^']+)'/) || [])[1];
+  if (!version) {
+    console.error('В коде не найдена BOT_VERSION — version.json не обновлён');
+    process.exit(1);
+  }
+
+  const changelog = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+  const section = changelog.split(/^## /m).find(part => part.trim().startsWith(version));
+
+  if (!section) {
+    console.error(`В CHANGELOG.md нет раздела «## ${version}» — допишите, что изменилось`);
+    process.exit(1);
+  }
+
+  // Пункт может занимать несколько строк — продолжения приклеиваем к нему,
+  // иначе в уведомлении фраза оборвётся на полуслове
+  const changes = [];
+  section.split('\n').slice(1).forEach(line => {
+    const text = line.trim();
+    if (!text) return;
+    if (text.startsWith('- ')) {
+      changes.push(text.replace(/^-\s*/, ''));
+    } else if (changes.length) {
+      changes[changes.length - 1] += ' ' + text;
+    }
+  });
+
+  fs.writeFileSync(path.join(DIST, 'version.json'), JSON.stringify({
+    version: version,
+    date: (section.match(/—\s*([\d.]+)/) || [])[1] || '',
+    changes: changes
+  }, null, 2) + '\n', 'utf8');
+}
+
 // Сразу проверяем, что склеенное вообще разбирается как JavaScript
 const vm = require('vm');
 try {

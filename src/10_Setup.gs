@@ -155,6 +155,14 @@ function setupSpreadsheet() {
     settings.setColumnWidth(3, 520);
   }
 
+  // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
+  // и без напоминания о новых версиях никто не узнает
+  try {
+    createUpdateTrigger();
+  } catch (err) {
+    logEvent_('Не удалось включить проверку обновлений', String(err));
+  }
+
   // Лист «Переводы» — словарь ивритских названий, чтобы одно и то же
   // переводилось всегда одинаково
   var translations = ensureSheet_(SHEET_TRANSLATIONS, TRANSLATION_COLUMNS);
