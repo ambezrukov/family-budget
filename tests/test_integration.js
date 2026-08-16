@@ -1665,6 +1665,30 @@ M.setWebResponder((url, params) => {
 const noApi = call('applyUpdate_');
 check('выключенный Apps Script API распознан', noApi.needsApi === true, JSON.stringify(noApi));
 
+// Разрешения в манифесте — только запрос: пока владелец не подтвердит их
+// в диалоге Google, токен остаётся со старыми правами
+M.setWebResponder((url, params) => {
+  if (url.indexOf('/dist/version.json') !== -1) {
+    return { code: 200, body: JSON.stringify({ version: '9.9.9', changes: [] }) };
+  }
+  if (url.indexOf('/dist/Код.gs') !== -1) return { code: 200, body: freshCode };
+  if (url.indexOf('/dist/appsscript.json') !== -1) return { code: 200, body: '{"timeZone":"UTC"}' };
+  if (url.indexOf('/content') !== -1 && params && params.method === 'put') {
+    return { code: 403, body: JSON.stringify({ error: {
+      code: 403, message: 'Request had insufficient authentication scopes.',
+      status: 'PERMISSION_DENIED',
+      details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }]
+    } }) };
+  }
+  if (url.indexOf('/content') !== -1) return { code: 200, body: '{"files":[]}' };
+  if (url.indexOf('/versions') !== -1) return { code: 200, body: '{"versionNumber":1}' };
+  return { code: 404, body: '' };
+});
+const noAuth = call('applyUpdate_');
+check('неподтверждённые разрешения распознаны', noAuth.needsAuth === true, JSON.stringify(noAuth));
+check('пользователю сказано, что делать', /подтвердить один раз/.test(noAuth.message),
+  noAuth.message);
+
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');
 check('самопроверка отработала', selfCheckText.includes('Проверка настройки'));

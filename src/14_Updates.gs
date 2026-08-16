@@ -276,6 +276,19 @@ function writeProjectContent_(scriptId, code, manifest) {
         message: 'Apps Script API выключен — без него бот не может обновить сам себя.'
       };
     }
+
+    // Разрешения в манифесте — только запрос. Пока владелец не подтвердит их
+    // в диалоге Google, токен остаётся со старым набором прав, и записать
+    // код нельзя. Это случается ровно один раз, после появления обновлятора.
+    if (code_ === 403 && /SCOPE_INSUFFICIENT|insufficient authentication scopes/i.test(body)) {
+      return {
+        ok: false,
+        needsAuth: true,
+        message: 'У меня пока нет разрешения править собственный код — ' +
+          'его нужно подтвердить один раз вручную.'
+      };
+    }
+
     return { ok: false, message: 'Google отказал при записи кода (' + code_ + ').' };
   } catch (err) {
     logEvent_('Сбой записи обновления', String(err));
