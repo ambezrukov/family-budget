@@ -1467,7 +1467,8 @@ expenses().getRange(rowsForAuthor, 11).setValue('Sizif');
 post({ message: msg({ from: STRANGER, text: '/avtory' }) });
 const authorsMsg = sent[sent.length - 1];
 check('в списке видно чужое на вид имя', /Sizif/.test(authorsMsg.text), authorsMsg.text.slice(0, 120));
-check('своё имя помечено', /это вы/.test(authorsMsg.text), authorsMsg.text.slice(0, 160));
+check('своё имя помечено', /так я подписываю вас сейчас/.test(authorsMsg.text),
+  authorsMsg.text.slice(0, 160));
 check('есть кнопка «это я»',
   JSON.stringify(authorsMsg.reply_markup || {}).includes('author:'),
   JSON.stringify(authorsMsg.reply_markup || {}).slice(0, 120));
@@ -1491,6 +1492,33 @@ check('переименование текстом сработало',
 post({ message: msg({ from: STRANGER, text: '/avtory Кого-то = ' }) });
 check('половинчатая команда отклонена', /через знак равенства/.test(sent[sent.length - 1].text),
   sent[sent.length - 1].text.slice(0, 60));
+
+// Пока имя человека не задано, кнопка «это я» переписала бы правильные записи
+// на телеграмное имя — её быть не должно
+const NONAME = { id: 222, first_name: 'Мария', last_name: 'Безрукова' };
+post({ message: msg({ from: NONAME, text: '/avtory' }) });
+const noNameMsg = sent[sent.length - 1];
+check('без заданного имени кнопок нет', !noNameMsg.reply_markup,
+  JSON.stringify(noNameMsg.reply_markup || {}).slice(0, 80));
+check('бот объясняет, что делать', /Скажите, как вас записывать/.test(noNameMsg.text),
+  noNameMsg.text.slice(0, 120));
+
+// Имя можно задать и за другого — по его телеграм-айди
+post({ message: msg({ from: STRANGER, text: '/imya 222 = Маша' }) });
+check('имя другого сохранено',
+  /222=Маша/.test(String(ctx.setting_('Разрешённые телеграм-айди', ''))),
+  String(ctx.setting_('Разрешённые телеграм-айди', '')));
+check('бот подтвердил', /подписываю как <b>Маша<\/b>/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 90));
+
+post({ message: msg({ from: STRANGER, text: '/imya 999999 = Кто-то' }) });
+check('чужой айди отклонён', /не в списке разрешённых/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 60));
+
+// Теперь у второго человека имя есть — записи пойдут под ним
+post({ message: msg({ from: NONAME, text: '55 мороженое' }) });
+check('запись второго человека подписана заданным именем', lastRow()[10] === 'Маша',
+  String(lastRow()[10]));
 
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');

@@ -177,6 +177,14 @@ function handleAuthorName_(message, text) {
     return;
   }
 
+  // «/imya 673335047 = Маша» — задать имя другому своему: жене или мужу,
+  // чтобы не ждать, пока человек дойдёт до телефона
+  var forOther = name.match(/^(\d{2,})\s*=\s*(.+)$/);
+  if (forOther) {
+    handleAuthorNameForOther_(message, forOther[1], forOther[2].trim());
+    return;
+  }
+
   if (name.length > 30 || /[=,;\n]/.test(name)) {
     tgSend_(chatId, 'Имя должно быть коротким и без знаков «=», «,» и «;».');
     return;
@@ -208,6 +216,50 @@ function handleAuthorName_(message, text) {
   lines.push('');
   lines.push('<i>Имя видно в таблице, в отчётах и в мини-приложении. ' +
     'Поменять можно этой же командой.</i>');
+
+  tgSend_(chatId, lines.join('\n'));
+}
+
+/**
+ * Задать имя другому человеку из семьи по его телеграм-айди.
+ *
+ * Только для тех, кто уже в белом списке: команда меняет подпись в общей
+ * таблице, и посторонний айди тут взяться не должен.
+ */
+function handleAuthorNameForOther_(message, userId, name) {
+  var chatId = message.chat.id;
+
+  if (!isAllowedUser_(userId)) {
+    tgSend_(chatId, 'Айди <code>' + escapeHtml_(userId) + '</code> не в списке разрешённых.\n' +
+      '<i>Список — в листе «Настройки», строка «Разрешённые телеграм-айди».</i>');
+    return;
+  }
+
+  if (name.length > 30 || /[=,;\n]/.test(name)) {
+    tgSend_(chatId, 'Имя должно быть коротким и без знаков «=», «,» и «;».');
+    return;
+  }
+
+  var previous = userNameById_(userId);
+  setUserName_(userId, name);
+
+  var renamed = 0;
+  if (previous) {
+    try {
+      renamed = renameAuthorInExpenses_([previous], name);
+    } catch (err) {
+      logEvent_('Не удалось переподписать записи', { error: String(err), user: name });
+    }
+  }
+
+  logEvent_('Задано имя другому автору', { userId: userId, было: previous, стало: name });
+
+  var lines = ['Готово. Человека с айди <code>' + escapeHtml_(String(userId)) +
+    '</code> подписываю как <b>' + escapeHtml_(name) + '</b>.'];
+  if (renamed) lines.push('Прошлых записей переподписал: <b>' + renamed + '</b>.');
+  lines.push('');
+  lines.push('<i>Если его прежние записи подписаны как-то иначе, сведите их: ' +
+    '«/avtory старое имя = ' + escapeHtml_(name) + '».</i>');
 
   tgSend_(chatId, lines.join('\n'));
 }
@@ -253,20 +305,39 @@ function handleAuthorsList_(message, text) {
   }
 
   var mine = userDisplayName_(message.from);
+  var named = !!userNameById_(message.from.id);
   var lines = ['<b>Кто как подписан в таблице</b>', ''];
   var keyboard = [];
 
   authors.forEach(function (author) {
     var isMine = author.name === mine;
     lines.push('• ' + escapeHtml_(author.name) + ' — ' + author.count +
-      (isMine ? ' <i>(это вы)</i>' : ''));
-    if (!isMine) {
+      (isMine ? ' <i>(так я подписываю вас сейчас)</i>' : ''));
+
+    // Кнопку показываем, только когда имя человека задано в настройках.
+    // Иначе нажатие переписало бы правильные записи на телеграмное имя —
+    // ровно наоборот тому, чего от кнопки ждут.
+    if (!isMine && named) {
       keyboard.push([{
         text: '↔️ «' + shorten_(author.name, 20) + '» — это я',
         callback_data: 'author:' + stashValue_({ name: author.name })
       }]);
     }
   });
+
+  if (!named) {
+    lines.push('');
+    lines.push('Сейчас я подписываю вас как <b>' + escapeHtml_(mine) + '</b> — ' +
+      'это имя из телеграма, потому что своё вы мне не называли.');
+    lines.push('');
+    lines.push('Скажите, как вас записывать: <code>/imya Толя</code>');
+    lines.push('Тогда я переподпишу прошлые записи и дальше буду звать вас так же.');
+    lines.push('');
+    lines.push('<i>Свести два имени можно и вручную: ' +
+      '«/avtory старое имя = новое имя».</i>');
+    tgSend_(chatId, lines.join('\n'));
+    return;
+  }
 
   if (!keyboard.length) {
     lines.push('');
