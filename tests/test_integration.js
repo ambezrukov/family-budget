@@ -1520,6 +1520,44 @@ post({ message: msg({ from: NONAME, text: '55 мороженое' }) });
 check('запись второго человека подписана заданным именем', lastRow()[10] === 'Маша',
   String(lastRow()[10]));
 
+// --- Данные для мини-приложения ----------------------------------------------
+console.log('\n=== Мини-приложение ===');
+
+const payload = call('miniAppPayload_', '');
+check('доходы за месяц посчитаны', payload.incomeTotal > 0, String(payload.incomeTotal));
+check('расходы за месяц посчитаны', payload.total > 0, String(payload.total));
+check('остаток = доходы минус расходы',
+  Math.abs(payload.balance - (payload.incomeTotal - payload.total)) < 0.01,
+  payload.balance + ' vs ' + (payload.incomeTotal - payload.total));
+check('категории доходов отдельным списком',
+  payload.incomeCategories.length > 0 &&
+  payload.incomeCategories.every(c => c.name && c.sum > 0),
+  JSON.stringify(payload.incomeCategories).slice(0, 100));
+check('доходы не попали в расходные категории',
+  !payload.categories.some(c => c.name === 'Зарплата'),
+  JSON.stringify(payload.categories.map(c => c.name)).slice(0, 120));
+check('записи доходов отдаются списком',
+  payload.incomes.length > 0 && payload.incomes.every(i => i.id && i.amount),
+  'записей: ' + payload.incomes.length);
+check('у записи дохода есть автор и дата',
+  !!(payload.incomes[0].author && payload.incomes[0].date), JSON.stringify(payload.incomes[0]));
+
+// Месяц, где были только доходы, тоже должен попасть в переключатель
+check('месяцы собраны из обоих листов', payload.months.length > 0,
+  payload.months.join(','));
+
+// Пока доходов нет, остаток не показывается: минус во весь экран пугал бы зря
+const emptyMonth = call('miniAppPayload_', '2019-01');
+check('в пустом месяце остатка нет', emptyMonth.balance === null, String(emptyMonth.balance));
+check('в пустом месяце доход нулевой', emptyMonth.incomeTotal === 0, String(emptyMonth.incomeTotal));
+
+// Удаление дохода из мини-приложения — тем же путём, что и расхода
+const incomeToDelete = payload.incomes[0].id;
+const deleteAnswer = call('handleMiniAppDelete_', { initData: '', id: incomeToDelete });
+check('без подписи телеграма удалить нельзя', deleteAnswer.ok === false, JSON.stringify(deleteAnswer));
+check('запись дохода находится по идентификатору',
+  !!ctx.locateRecord_(incomeToDelete), String(incomeToDelete));
+
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');
 check('самопроверка отработала', selfCheckText.includes('Проверка настройки'));

@@ -109,6 +109,27 @@
   .delta-up { color: var(--up); }
   .delta-down { color: var(--down); }
 
+  /* ---------- Доходы и остаток ----------
+     Доход в шапке даётся строкой, а не вторым крупным числом: главное на
+     странице — сколько потрачено, доход тут опора для остатка. */
+  .hero-balance {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 1.1rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.92rem;
+    color: var(--ink-muted);
+  }
+  .hero-balance b { font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .balance-left b { color: var(--down); }
+  .balance-over b { color: var(--up); }
+
+  /* Полоски доходов — своим цветом, чтобы не путались с расходными */
+  .card-income .cat-track { background: rgba(12, 163, 12, 0.15); }
+  .card-income .cat-fill { background: var(--down); }
+
   /* ---------- Карточки ---------- */
   .card {
     background: var(--surface);
@@ -330,6 +351,56 @@
       ' (' + sign + Math.abs(percent) + '%)</b></div>';
   }
 
+  // Доход и остаток — строкой под суммой расходов. Пока доходы не вносят,
+  // строки нет вовсе: пустой остаток ничего не сообщает.
+  function balanceLine(data) {
+    if (!data.incomeTotal) return '';
+
+    var left = data.balance;
+    var over = left !== null && left < 0;
+    var cls = over ? 'balance-over' : 'balance-left';
+
+    return '<div class="hero-balance">' +
+      '<span>Доходы <b>' + money(data.incomeTotal, data.currency) + '</b></span>' +
+      (left === null ? '' :
+        '<span class="' + cls + '">' + (over ? 'Перерасход ' : 'Осталось ') +
+        '<b>' + money(Math.abs(left), data.currency) + '</b></span>') +
+      '</div>';
+  }
+
+  function incomeCard(data) {
+    if (!data.incomeCategories || !data.incomeCategories.length) return '';
+
+    var top = data.incomeCategories[0].sum;
+    var categories = data.incomeCategories.map(function (cat) {
+      var width = top > 0 ? (cat.sum / top) * 100 : 0;
+      return '<div class="cat">' +
+        '<div class="cat-head"><span class="cat-name">' + escapeHtml(cat.name) +
+        '<span class="cat-share">' + cat.share + '%</span></span>' +
+        '<span class="cat-sum">' + money(cat.sum, data.currency) + '</span></div>' +
+        '<div class="cat-track"><div class="cat-fill" style="width:' + width.toFixed(1) + '%"></div></div>' +
+        '</div>';
+    }).join('');
+
+    var rows = data.incomes.map(function (item) {
+      var title = item.description || item.category;
+      return '<div class="row" data-id="' + item.id + '">' +
+        '<div class="row-main">' + escapeHtml(title) + '</div>' +
+        '<div class="row-sum">' + money(item.amount, item.currency) + '</div>' +
+        '<div class="row-meta"><span>' + item.date + '</span>' +
+        '<span class="tag">' + escapeHtml(item.category) + '</span>' +
+        '<span>' + escapeHtml(item.author) + '</span>' +
+        '<button class="row-delete" data-delete="' + item.id + '">удалить</button>' +
+        '</div></div>';
+    }).join('');
+
+    return '<div class="card card-income">' +
+      '<h2>Доходы · ' + money(data.incomeTotal, data.currency) + '</h2>' +
+      categories +
+      '<div class="rows">' + rows + '</div>' +
+      '</div>';
+  }
+
   function render(data) {
     state.data = data;
 
@@ -351,7 +422,7 @@
       : '<div class="empty">Пока ничего не записано</div>';
 
     var authors = data.authors.length > 1
-      ? '<div class="card"><h2>Кто сколько записал</h2><div class="authors">' +
+      ? '<div class="card"><h2>Кто сколько потратил</h2><div class="authors">' +
         data.authors.map(function (a) {
           return '<div class="author"><div class="author-name">' + escapeHtml(a.name) +
             '</div><div class="author-sum">' + money(a.sum, data.currency) + '</div></div>';
@@ -382,9 +453,11 @@
           '<div class="hero-label">' + escapeHtml(data.monthTitle) + '</div>' +
           '<div class="hero-value">' + money(data.total, data.currency) + '</div>' +
           deltaLine(data) +
+          balanceLine(data) +
         '</div>' +
         (data.total > 0 ? '<div class="card"><h2>По дням</h2>' + dailyChart(data.daily, data.currency) + '</div>' : '') +
         '<div class="card"><h2>По категориям</h2>' + categories + '</div>' +
+        incomeCard(data) +
         authors +
         '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
       '</div>';

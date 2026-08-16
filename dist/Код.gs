@@ -6329,16 +6329,24 @@ function miniAppPayload_(monthKey) {
   var all = readExpenses_({});
   var expenses = all.filter(function (item) { return item.date >= from && item.date <= to; });
 
+  var allIncomes = readIncomes_({});
+  var incomes = allIncomes.filter(function (item) { return item.date >= from && item.date <= to; });
+
   var prevMonth = new Date(month.getFullYear(), month.getMonth() - 1, 1);
   var prevExpenses = all.filter(function (item) {
     return item.date >= monthStart_(prevMonth) && item.date <= monthEnd_(prevMonth);
   });
+  var prevIncomes = allIncomes.filter(function (item) {
+    return item.date >= monthStart_(prevMonth) && item.date <= monthEnd_(prevMonth);
+  });
 
   var total = totalOf_(expenses);
+  var incomeTotal = totalOf_(incomes);
 
-  // Какие месяцы вообще есть в таблице — для переключателя
+  // Какие месяцы вообще есть в таблице — для переключателя.
+  // Месяц с одними доходами тоже должен быть в списке.
   var monthsSeen = {};
-  all.forEach(function (item) {
+  all.concat(allIncomes).forEach(function (item) {
     monthsSeen[monthKeyOf_(item.date)] = true;
   });
   var months = Object.keys(monthsSeen).sort().reverse();
@@ -6366,6 +6374,32 @@ function miniAppPayload_(monthKey) {
     total: Math.round(total * 100) / 100,
     prevTotal: Math.round(totalOf_(prevExpenses) * 100) / 100,
     count: expenses.length,
+    incomeTotal: Math.round(incomeTotal * 100) / 100,
+    prevIncomeTotal: Math.round(totalOf_(prevIncomes) * 100) / 100,
+    // Остаток считаем только когда доходы вносят: иначе страница показывала бы
+    // огромный минус и пугала на пустом месте
+    balance: incomes.length ? Math.round((incomeTotal - total) * 100) / 100 : null,
+    incomeCategories: groupBy_(incomes, 'category').map(function (group) {
+      return {
+        name: group.key,
+        sum: Math.round(group.sum * 100) / 100,
+        count: group.count,
+        share: incomeTotal > 0 ? Math.round((group.sum / incomeTotal) * 1000) / 10 : 0
+      };
+    }),
+    incomes: incomes.slice().reverse().map(function (item) {
+      return {
+        id: item.id,
+        date: formatDate_(item.date),
+        amount: item.amount,
+        currency: item.currency,
+        baseAmount: item.baseAmount,
+        category: item.category,
+        description: item.description,
+        author: item.author,
+        sourceType: item.sourceType
+      };
+    }),
     daily: daily,
     categories: groupBy_(expenses, 'category').map(function (group) {
       return {
