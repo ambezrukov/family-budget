@@ -1,0 +1,650 @@
+<title>Установка бота расходов</title>
+
+<style>
+  /* ---------- Палитра: холодный нейтральный с уклоном в морскую зелень ---------- */
+  :root {
+    --ground: #f6f8f7;
+    --surface: #ffffff;
+    --surface-sunk: #eef2f1;
+    --ink: #15201e;
+    --ink-soft: #4a5a57;
+    --ink-faint: #7b8b87;
+    --line: #dde5e3;
+    --accent: #0f6f63;
+    --accent-soft: #ddedea;
+    --warn: #8a541b;
+    --warn-soft: #f6ecdd;
+
+    --font-display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+    --step-1: 0.78rem;
+    --step0: 1rem;
+    --step1: 1.15rem;
+    --step2: 1.45rem;
+    --step3: 2rem;
+    --step4: 2.7rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1514;
+      --surface: #161f1d;
+      --surface-sunk: #1c2725;
+      --ink: #e7edeb;
+      --ink-soft: #a8b6b3;
+      --ink-faint: #7e8c89;
+      --line: #2a3835;
+      --accent: #52c5b1;
+      --accent-soft: #1a302c;
+      --warn: #d9a463;
+      --warn-soft: #2c2418;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1514;
+    --surface: #161f1d;
+    --surface-sunk: #1c2725;
+    --ink: #e7edeb;
+    --ink-soft: #a8b6b3;
+    --ink-faint: #7e8c89;
+    --line: #2a3835;
+    --accent: #52c5b1;
+    --accent-soft: #1a302c;
+    --warn: #d9a463;
+    --warn-soft: #2c2418;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: var(--step0);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 50rem;
+    margin: 0 auto;
+    padding: 0 1.5rem 6rem;
+  }
+
+  /* ---------- Шапка ---------- */
+  .masthead {
+    padding: 4rem 0 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .eyebrow {
+    font-size: var(--step-1);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: var(--step4);
+    line-height: 1.1;
+    margin: 0;
+    text-wrap: balance;
+    font-weight: 400;
+  }
+
+  .lede {
+    font-size: var(--step1);
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 34em;
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--line);
+    font-size: var(--step-1);
+    color: var(--ink-faint);
+  }
+  .facts b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- Полоса прогресса ---------- */
+  .tracker {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--ground);
+    padding: 0.85rem 0;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-size: var(--step-1);
+  }
+  .tracker-label { color: var(--ink-soft); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; height: 5px; background: var(--surface-sunk); border-radius: 99px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+  .reset {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-soft);
+    font: inherit;
+    font-size: var(--step-1);
+    padding: 0.25rem 0.7rem;
+    border-radius: 99px;
+    cursor: pointer;
+  }
+  .reset:hover { border-color: var(--accent); color: var(--accent); }
+  .reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- Шаги ---------- */
+  .phase {
+    font-family: var(--font-display);
+    font-size: var(--step2);
+    margin: 3.5rem 0 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--ink);
+    font-weight: 400;
+  }
+  .phase-note { color: var(--ink-faint); font-size: var(--step-1); margin: 0.5rem 0 0; }
+
+  .steps { list-style: none; margin: 0; padding: 0; }
+
+  .step {
+    display: grid;
+    grid-template-columns: 2.6rem 1fr;
+    gap: 0 1.1rem;
+    padding: 2rem 0;
+    border-bottom: 1px solid var(--line);
+    align-items: start;
+  }
+
+  .num {
+    grid-row: span 2;
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: 50%;
+    border: 1.5px solid var(--line);
+    background: var(--surface);
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .step h3 {
+    margin: 0.3rem 0 0.6rem;
+    font-size: var(--step1);
+    font-weight: 650;
+    text-wrap: balance;
+  }
+
+  .step-body > * { margin: 0 0 0.75rem; }
+  .step-body > *:last-child { margin-bottom: 0; }
+  .step-body ol, .step-body ul { padding-left: 1.2rem; }
+  .step-body li { margin-bottom: 0.35rem; }
+
+  .done-toggle {
+    grid-column: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    font-size: var(--step-1);
+    color: var(--ink-faint);
+    cursor: pointer;
+    user-select: none;
+    width: fit-content;
+  }
+  .done-toggle input { width: 1.05rem; height: 1.05rem; accent-color: var(--accent); cursor: pointer; }
+  .done-toggle:hover { color: var(--accent); }
+
+  .step.done .step-body, .step.done h3 { opacity: 0.45; }
+  .step.done .num { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .step.done .num::after { content: "✓"; font-size: 1.1rem; }
+  .step.done .num span { display: none; }
+  .step.done .done-toggle { color: var(--accent); }
+
+  /* ---------- Мелочи типографики ---------- */
+  code, kbd {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background: var(--surface-sunk);
+    padding: 0.12em 0.4em;
+    border-radius: 4px;
+    word-break: break-word;
+  }
+
+  pre {
+    background: var(--surface-sunk);
+    border-left: 3px solid var(--accent);
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+
+  .note, .warnbox {
+    background: var(--accent-soft);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    font-size: 0.94rem;
+  }
+  .warnbox { background: var(--warn-soft); }
+  .warnbox strong { color: var(--warn); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th {
+    font-size: var(--step-1);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    font-weight: 600;
+  }
+  .table-scroll { overflow-x: auto; }
+
+  .field { font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
+
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- Финальные блоки ---------- */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1.1rem 1.2rem;
+  }
+  .card h4 { margin: 0 0 0.5rem; font-size: var(--step0); font-weight: 650; }
+  .card p { margin: 0; font-size: 0.92rem; color: var(--ink-soft); }
+  .card code { font-size: 0.82em; }
+
+  .outro {
+    margin-top: 3rem;
+    padding: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  @media (max-width: 34rem) {
+    .step { grid-template-columns: 2rem 1fr; gap: 0 0.8rem; }
+    .num { width: 2rem; height: 2rem; font-size: 0.8rem; }
+    h1 { font-size: var(--step3); }
+    .masthead { padding-top: 2.5rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Семейный бюджет · Telegram + Google-таблица</div>
+    <h1>Установка бота расходов</h1>
+    <p class="lede">
+      Одиннадцать шагов от пустой таблицы до работающего бота, который принимает
+      траты текстом, голосом, фотографиями чеков и ссылками на чеки из SMS, а также доходы. Всё делается в браузере,
+      программировать не нужно.
+    </p>
+    <div class="facts">
+      <span><b>30–40 минут</b> целиком</span>
+      <span><b>Бесплатно</b> — Google, Telegram, Gemini</span>
+      <span>Порядок шагов <b>важен</b></span>
+    </div>
+  </header>
+
+  <div class="tracker">
+    <span class="tracker-label" id="progress-label">Сделано 0 из 11</span>
+    <div class="bar"><span id="progress-bar"></span></div>
+    <button class="reset" id="reset">Сбросить</button>
+  </div>
+
+  <h2 class="phase">Подготовка</h2>
+  <p class="phase-note">Таблица, код и ключи. После этого шага бот ещё не работает.</p>
+
+  <ol class="steps">
+
+    <li class="step" id="s1">
+      <div class="num"><span>1</span></div>
+      <div class="step-body">
+        <h3>Создать таблицу</h3>
+        <p>Откройте <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> — появится пустая Google-таблица. Назовите её «Семейный бюджет».</p>
+        <p>В адресной строке найдите идентификатор таблицы — это кусок между <code>/d/</code> и <code>/edit</code>:</p>
+        <pre><code>docs.google.com/spreadsheets/d/<b>1AbCdEf…XyZ</b>/edit</code></pre>
+        <p>Скопируйте его в блокнот — понадобится на шаге 5.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s1"> Готово</label>
+    </li>
+
+    <li class="step" id="s2">
+      <div class="num"><span>2</span></div>
+      <div class="step-body">
+        <h3>Перенести код</h3>
+        <p>В таблице: меню <b>Расширения → Apps Script</b>. Откроется редактор в новой вкладке — назовите проект «Бот расходов».</p>
+        <ol>
+          <li>Откройте на компьютере файл <code>dist/Код.gs</code> (подойдёт «Блокнот»).</li>
+          <li>Выделите всё (<kbd>Ctrl</kbd>+<kbd>A</kbd>), скопируйте.</li>
+          <li>В редакторе Apps Script щёлкните внутри файла <code>Код.gs</code>, выделите всё и вставьте поверх.</li>
+          <li>Сохраните (<kbd>Ctrl</kbd>+<kbd>S</kbd>).</li>
+        </ol>
+        <p>Файл длинный, около 3800 строк — это нормально. Подчёркиваний и ошибок в редакторе быть не должно.</p>
+        <p>Затем настройки проекта: шестерёнка слева → галочка <b>«Показывать файл манифеста appsscript.json»</b>. Вернитесь в редактор, откройте появившийся <code>appsscript.json</code> и замените его содержимое на <code>dist/appsscript.json</code>. Там задан часовой пояс Иерусалима — без него даты поедут.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s2"> Готово</label>
+    </li>
+
+    <li class="step" id="s3">
+      <div class="num"><span>3</span></div>
+      <div class="step-body">
+        <h3>Создать бота у BotFather</h3>
+        <p>Напишите <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> команду <code>/newbot</code>.</p>
+        <div class="table-scroll">
+          <table>
+            <tr>
+              <th>Что спросит</th><th>Что отвечать</th>
+            </tr>
+            <tr>
+              <td><b>Имя</b></td>
+              <td>Понятное: «Семейный бюджет». Это подпись в списке чатов, её видите только вы.</td>
+            </tr>
+            <tr>
+              <td><b>Логин</b></td>
+              <td>Бессмысленный: <code>qx7m2vk_bot</code>. По логину бота находят посторонние — осмысленный делает его находимым.</td>
+            </tr>
+          </table>
+        </div>
+        <p>В ответ придёт <b>токен</b> вида <code>7123456789:AAF…</code> — скопируйте в блокнот.</p>
+        <div class="warnbox"><strong>Токен — это пароль от бота.</strong> Не выкладывайте его никуда и не пересылайте.</div>
+        <p>Заодно спрячьте бота: описание оставьте пустым, а командой <code>/setjoingroups</code> → <b>Disable</b> запретите добавлять его в чужие группы. Пропустите запрет, если хотите получать месячный отчёт в общий семейный чат — туда бота придётся добавить.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s3"> Готово</label>
+    </li>
+
+    <li class="step" id="s4">
+      <div class="num"><span>4</span></div>
+      <div class="step-body">
+        <h3>Получить ключ Gemini</h3>
+        <p>Откройте <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> под тем же Google-аккаунтом, где лежит таблица, и нажмите <b>Create API key</b>. Имя ключа — любое.</p>
+        <div class="note">
+          <b>Если в поле проекта написано «No Cloud Projects Available»</b> — значит, проектов Google Cloud у вас ещё нет, и это нормально. Раскройте список, выберите <b>Create project</b>, назовите его как угодно (<code>family-budget</code>), организацию оставьте <b>No organization</b>. Проект создастся за пару секунд и подставится сам. Пункт «Import project» нужен только тем, у кого проекты уже есть.
+        </div>
+        <p>Нажмите <b>Create key</b> и скопируйте ключ (<code>AIza…</code>) в блокнот.</p>
+        <p>Карту привязывать не нужно: и проект, и бесплатный уровень Gemini работают без биллинга — в списке ключей столбец <b>Billing Tier</b> покажет <code>Free</code>.</p>
+        <p>Этот ключ — «уши и глаза» бота: разбор сообщений, расшифровка голоса, чтение чеков.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s4"> Готово</label>
+    </li>
+
+    <li class="step" id="s5">
+      <div class="num"><span>5</span></div>
+      <div class="step-body">
+        <h3>Прописать секреты</h3>
+        <p>В редакторе Apps Script: шестерёнка <b>Настройки проекта</b> → вниз до раздела <b>Свойства скрипта</b> → <b>Добавить свойство</b>. Имена вводите ровно так:</p>
+        <div class="table-scroll">
+          <table>
+            <tr><th>Имя свойства</th><th>Значение</th></tr>
+            <tr><td class="field">TELEGRAM_TOKEN</td><td>токен от BotFather (шаг 3)</td></tr>
+            <tr><td class="field">GEMINI_API_KEY</td><td>ключ из AI Studio (шаг 4)</td></tr>
+            <tr><td class="field">SPREADSHEET_ID</td><td>идентификатор таблицы (шаг 1)</td></tr>
+          </table>
+        </div>
+        <p><b>Сохранить свойства скрипта.</b></p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s5"> Готово</label>
+    </li>
+
+    <li class="step" id="s6">
+      <div class="num"><span>6</span></div>
+      <div class="step-body">
+        <h3>Создать листы</h3>
+        <p>Вернитесь в редактор Apps Script — вкладку из шага 2, не в таблицу. Над кодом есть панель с кнопками «Сохранить», «Выполнить» (Run), «Отладка», а сразу за ними — <b>выпадающий список функций</b>. Выберите в нём <code>setupSpreadsheet</code> и нажмите <b>Выполнить</b>. Результат появится внизу, в «Журнале выполнения».</p>
+        <div class="note">Список пуст или нужной функции нет? Сохраните файл (<kbd>Ctrl</kbd>+<kbd>S</kbd>) — имена функций подтягиваются только из сохранённого кода. Тем же способом запускаются и остальные функции из инструкции: <code>setWebhook</code>, <code>setBotCommands</code>, <code>createMonthlyTrigger</code>, <code>selfCheck</code>.</div>
+        <p>Google попросит разрешения — скрипт ваш собственный, это нормально:</p>
+        <ol>
+          <li><b>Разрешить доступ</b> → выберите свой аккаунт;</li>
+          <li>на экране «Google не проверил это приложение» → <b>Дополнительные настройки</b> → <b>Перейти к проекту (небезопасно)</b>;</li>
+          <li><b>Разрешить</b>.</li>
+        </ol>
+        <p>В таблице появятся пять листов — это ярлычки-вкладки в нижней части окна таблицы:</p>
+        <pre><code>[ Расходы ] [ Доходы ] [ Категории ] [ Настройки ] [ Лог ]</code></pre>
+        <p><b>Расходы</b> — сюда пишутся записи. <b>Доходы</b> — задел на будущее, пустой. <b>Категории</b> — справочник, уже заполнен под жизнь в Израиле. <b>Настройки</b> — то, что вы правите руками. <b>Лог</b> — ошибки и всё, что бот не разобрал.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s6"> Готово</label>
+    </li>
+  </ol>
+
+  <h2 class="phase">Запуск</h2>
+  <p class="phase-note">После этих шагов бот оживёт.</p>
+
+  <ol class="steps">
+    <li class="step" id="s7">
+      <div class="num"><span>7</span></div>
+      <div class="step-body">
+        <h3>Научить бота получать сообщения</h3>
+        <p>Обычно ботам ставят «вебхук»: телеграм сам стучится по адресу и приносит сообщение. <b>С Apps Script это не работает</b> — он отвечает перенаправлением на другой адрес. Браузер за таким идёт, телеграм нет: считает ошибкой и складывает сообщения в очередь. Настройками не лечится, проверено на чистом развёртывании.</p>
+        <p>Поэтому два пути, оба рабочие. Переключаться можно в любой момент.</p>
+
+        <h4 style="margin:1.2rem 0 0.4rem; font-size:1rem">Путь А — опрос (проще)</h4>
+        <p>Скрипт сам раз в минуту спрашивает телеграм, нет ли нового. Выполните функцию <code>switchToPolling</code> (файл <code>11_Polling</code>) — и всё.</p>
+        <p>Ответ приходит в течение минуты. Сторонних сервисов не нужно. Сообщения не теряются: телеграм хранит недоставленное сутки.</p>
+
+        <h4 style="margin:1.2rem 0 0.4rem; font-size:1rem">Путь Б — вебхук через посредника (мгновенно)</h4>
+        <p>Между телеграмом и скриптом ставится крошечная программа на бесплатном хостинге (Vercel): принимает сообщение, проверяет подпись и передаёт дальше, проходя перенаправление.</p>
+        <ol>
+          <li>Развернуть скрипт как веб-приложение: <b>Начать развёртывание → Новое развёртывание</b> → <b>Веб-приложение</b>, запуск от имени <b>Я</b>, доступ <b>Все</b>. Скопировать адрес <code>/exec</code>.</li>
+          <li>В папке <code>proxy</code> выполнить <code>vercel deploy --prod</code>, получить адрес посредника.</li>
+          <li>В переменных проекта Vercel задать <span class="field">APPS_SCRIPT_URL</span> (адрес <code>/exec</code>) и <span class="field">WEBHOOK_SECRET</span> (случайное слово).</li>
+          <li>В свойствах скрипта задать <span class="field">WEBHOOK_URL</span> (адрес посредника) и <span class="field">WEBHOOK_SECRET</span> (то же слово).</li>
+          <li>Выполнить функцию <code>switchToWebhook</code>.</li>
+        </ol>
+        <div class="warnbox"><strong>Что учесть:</strong> через посредника проходят все сообщения боту — суммы, описания, фото чеков. Он ничего не хранит, но технически видит. Секретное слово нужно, чтобы на его адрес не прошёл чужой запрос.</div>
+
+        <p style="margin-top:1rem">В любом случае выполните <code>setBotCommands</code> — в телеграме появится меню команд.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s7"> Готово</label>
+    </li>
+
+    <li class="step" id="s9">
+      <div class="num"><span>8</span></div>
+      <div class="step-body">
+        <h3>Пустить себя и жену</h3>
+        <p>Бот сейчас не отвечает никому — для постороннего он выглядит неживым. Но каждую попытку записывает, оттуда и возьмём номера.</p>
+        <ol>
+          <li>Откройте бота в телеграме, нажмите «Старт» и напишите <code>привет</code>. Ответа не будет — так и надо.</li>
+          <li>Попросите жену сделать то же со своего телефона.</li>
+          <li>Переключитесь на вкладку браузера с <b>таблицей</b> (не с Apps Script) и внизу окна щёлкните ярлычок листа <b>Лог</b>. В правом столбце появятся строки вида:
+            <pre><code>{"userId":123456789,"chatId":123456789,
+ "username":"anatoly","name":"Анатолий","text":"привет"}</code></pre>
+            Число после <code>userId</code> — телеграм-айди. Выпишите своё и жены.</li>
+          <li>На листе <b>Настройки</b> в строке «Разрешённые телеграм-айди» впишите оба через запятую: <code>123456789, 987654321</code>.</li>
+          <li>Там же в строке «Чат месячного отчёта» впишите <b>те же два числа через запятую</b> — тогда первого числа каждый получит свой экземпляр отчёта в личку. В личной переписке номер человека и номер чата совпадают, искать отдельно нечего. Оставите одно число — отчёт получит только он.</li>
+        </ol>
+        <div class="note">Хотите отчёт в общий чат, а не в личку каждому? Создайте группу с женой, добавьте туда бота, напишите в группе <code>/whoami</code> — бот покажет айди чата (у групп он отрицательный, вида <code>-1001234567890</code>). Впишите это число вместо двух личных. Менять можно когда угодно, это одна ячейка.</div>
+        <p>Проверка: напишите боту <code>50 хлеб</code>. Должен ответить «✅ Записал: 50 ₪», а в таблице появится строка.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s9"> Готово</label>
+    </li>
+
+    <li class="step" id="s10">
+      <div class="num"><span>9</span></div>
+      <div class="step-body">
+        <h3>Дать доступ жене</h3>
+        <p>В таблице: <b>Настройки доступа</b> → адрес Gmail жены → права <b>Редактор</b> → отправить.</p>
+        <p>Бот работает от вашего имени, но записи от обоих попадают в одну таблицу — в столбце «Автор» видно, кто записал.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s10"> Готово</label>
+    </li>
+
+    <li class="step" id="s11">
+      <div class="num"><span>10</span></div>
+      <div class="step-body">
+        <h3>Включить месячный отчёт</h3>
+        <p>В редакторе выберите функцию <code>createMonthlyTrigger</code> → <b>Выполнить</b>.</p>
+        <p>Первого числа около 10 утра бот сам пришлёт в указанный чат отчёт за прошедший месяц: итог, категории с долями, сравнение с прошлым месяцем, пять крупнейших трат и разбивку по авторам. Посмотреть, как он выглядит, можно в любой момент командой <code>/otchet</code>.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s11"> Готово</label>
+    </li>
+
+    <li class="step" id="s12">
+      <div class="num"><span>11</span></div>
+      <div class="step-body">
+        <h3>Проверить, что всё на месте</h3>
+        <p>Выполните функцию <code>selfCheck</code>. В журнале появится сводка. Идеально — так:</p>
+        <pre><code>✅ Проблем не найдено
+ℹ️ Сведения:
+  • Таблица: Семейный бюджет
+  • Разрешённых пользователей: 2
+  • Категорий в справочнике: 12
+  • Базовая валюта: ILS
+  • Бот: @qx7m2vk_bot
+  • Вебхук: https://script.google.com/…/exec
+  • Gemini отвечает, тестовая категория: Продукты</code></pre>
+        <p>Если что-то помечено ❌ — там же написано, что именно и как чинить.</p>
+      </div>
+      <label class="done-toggle"><input type="checkbox" data-step="s12"> Готово</label>
+    </li>
+  </ol>
+
+  <h2 class="phase">Как пользоваться</h2>
+
+  <div class="cards">
+    <div class="card">
+      <h4>Текстом</h4>
+      <p><code>360 шек отправка машины</code><br>
+      <code>вчера 1200 гараж</code><br>
+      <code>250 продукты, 80 бензин и 45 аптека</code> — запишет три строки разом.</p>
+    </div>
+    <div class="card">
+      <h4>Голосом</h4>
+      <p>Наговорите: «двести тридцать шекелей супермаркет». Русский, иврит и вперемешку. В ответе покажет, что расслышал.</p>
+    </div>
+    <div class="card">
+      <h4>Чеком</h4>
+      <p>Сфотографируйте — возьмёт итог из строки итога, дату с чека, магазин и позиции. Ивритские читает.</p>
+    </div>
+    <div class="card">
+      <h4>Доходы</h4>
+      <p>Сумма с плюсом — <code>+12000 зарплата</code> — уходит в отдельный лист «Доходы». Слова «зарплата», «аванс», «премия» узнаёт и без плюса, но тогда пишет «Записал доход» и даёт кнопку «Это расход». Возврат за товар считает не доходом, а отменой траты — минусом в ту же категорию. Снятие наличных и переводы друг другу не записывает вовсе. Сколько осталось — команда <code>/dohody</code>.</p>
+    </div>
+    <div class="card">
+      <h4>Ссылкой на чек</h4>
+      <p>Перешлите SMS магазина целиком — ссылку откроет сам. Для Carrefour, Mega, «Йейнот Битан», «Рами Леви» и IKEA берёт данные готовыми, до копейки; остальные ссылки читает как PDF, картинку или страницу. Не открылась — скажет и попросит скриншот.</p>
+    </div>
+    <div class="card">
+      <h4>Кнопки под записью</h4>
+      <p>«Изменить категорию» и «Удалить». Удаление не стирает строку, а исключает её из отчётов.</p>
+    </div>
+  </div>
+
+  <div class="table-scroll" style="margin-top:1.5rem">
+    <table>
+      <tr><th>Команда</th><th>Что делает</th></tr>
+      <tr><td class="field">/mesyac</td><td>расходы за текущий месяц по категориям</td></tr>
+      <tr><td class="field">/poslednie</td><td>последние 10 записей</td></tr>
+      <tr><td class="field">/segodnya</td><td>сумма за сегодня</td></tr>
+      <tr><td class="field">/otchet</td><td>полный отчёт за прошлый месяц</td></tr>
+      <tr><td class="field">/spravka</td><td>справка по формату ввода</td></tr>
+      <tr><td class="field">/otmena</td><td>отменить незавершённую запись</td></tr>
+    </table>
+  </div>
+
+  <div class="outro">
+    <h4 style="margin:0 0 0.6rem; font-size:var(--step1); font-family:var(--font-display); font-weight:400">Если что-то пошло не так</h4>
+    <p style="margin:0 0 0.6rem"><b>Бот молчит.</b> Сначала проверьте белый список на листе «Настройки»: молчание — его штатная реакция на чужого. Свой айди всегда виден в листе «Лог». Если там всё верно — выполните <code>selfCheck</code>.</p>
+    <p style="margin:0 0 0.6rem"><b>Голос и чеки не разбираются, текст работает.</b> Дело в Gemini: проверьте ключ и загляните в лист «Лог». Частая причина — исчерпан дневной бесплатный лимит, тогда достаточно подождать до следующих суток.</p>
+    <p style="margin:0 0 0.6rem"><b>Расход попал не в ту категорию.</b> Поправьте кнопкой и допишите ключевое слово в лист «Категории» — в следующий раз бот не ошибётся.</p>
+    <p style="margin:0 0 0.6rem"><b>Бот замолчал совсем.</b> Проверьте функцией <code>selfCheck</code>, в каком режиме приём сообщений. Если вебхук через посредника подвёл — выполните <code>switchToPolling</code>: бот вернётся на опрос и заработает без сторонних сервисов, пусть и с задержкой до минуты.</p>
+    <p style="margin:0"><b>Правили код — бот работает по-старому.</b> Вебхук исполняет <i>развёрнутую</i> версию, а не последнюю сохранённую. Правильный порядок — <code>node tools/deploy.js</code>: он прогоняет тесты, заливает код и обновляет развёртывание. Вручную: <b>Начать развёртывание → Управление развёртываниями</b> → карандаш → <b>Версия: Новая версия</b> → <b>Развернуть</b>.</p>
+  </div>
+
+</div>
+
+<script>
+  (function () {
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.done-toggle input'));
+    var bar = document.getElementById('progress-bar');
+    var label = document.getElementById('progress-label');
+    var KEY = 'family-budget-setup';
+
+    function load() {
+      try {
+        return JSON.parse(localStorage.getItem(KEY) || '{}');
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function save(state) {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(state));
+      } catch (e) {
+        /* приватный режим — прогресс просто не переживёт перезагрузку */
+      }
+    }
+
+    function render() {
+      var done = 0;
+      boxes.forEach(function (box) {
+        var step = document.getElementById(box.dataset.step);
+        if (box.checked) { done++; step.classList.add('done'); }
+        else { step.classList.remove('done'); }
+      });
+      bar.style.width = (done / boxes.length * 100) + '%';
+      label.textContent = done === boxes.length
+        ? 'Все ' + boxes.length + ' шагов пройдены'
+        : 'Сделано ' + done + ' из ' + boxes.length;
+    }
+
+    var state = load();
+    boxes.forEach(function (box) {
+      box.checked = !!state[box.dataset.step];
+      box.addEventListener('change', function () {
+        state[box.dataset.step] = box.checked;
+        save(state);
+        render();
+      });
+    });
+
+    document.getElementById('reset').addEventListener('click', function () {
+      state = {};
+      save(state);
+      boxes.forEach(function (box) { box.checked = false; });
+      render();
+    });
+
+    render();
+  })();
+</script>

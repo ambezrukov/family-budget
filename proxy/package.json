@@ -1,0 +1,10 @@
+{
+  "name": "family-budget-telegram-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Посредник между Telegram и Google Apps Script: принимает вебхук и передаёт его дальше, проходя перенаправление Apps Script",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}

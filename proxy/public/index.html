@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Бюджет</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Цвета берём у телеграма, чтобы страница выглядела частью приложения,
+     а свои — только там, где у него нет подходящего токена. */
+  :root {
+    color-scheme: light dark;
+
+    --bg: var(--tg-theme-bg-color, #fcfcfb);
+    --surface: var(--tg-theme-secondary-bg-color, #f1f3f2);
+    --ink: var(--tg-theme-text-color, #0b0b0b);
+    --ink-muted: var(--tg-theme-hint-color, #7b8b87);
+    --line: rgba(127, 140, 137, 0.22);
+
+    --accent: #0b8a76;
+    --accent-soft: rgba(11, 138, 118, 0.13);
+    /* Рост/снижение — статусные цвета. Красный и зелёный неразличимы при
+       дальтонизме, поэтому рядом всегда стрелка и знак: цвет не единственный
+       носитель смысла. */
+    --up: #d03b3b;
+    --down: #0ca30c;
+
+    --radius: 14px;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--tg-theme-bg-color, #17201f);
+      --surface: var(--tg-theme-secondary-bg-color, #1e2a28);
+      --ink: var(--tg-theme-text-color, #e7edeb);
+      --ink-muted: var(--tg-theme-hint-color, #93a29f);
+      --line: rgba(160, 175, 172, 0.2);
+      --accent: #17a68d;
+      --accent-soft: rgba(23, 166, 141, 0.18);
+      --up: #d03b3b;
+      --down: #0ca30c;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0 0 2.5rem;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { padding: 0 1rem; max-width: 40rem; margin: 0 auto; }
+
+  /* ---------- Переключатель месяцев ---------- */
+  .months {
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    padding: 0.9rem 1rem;
+    scrollbar-width: none;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 5;
+  }
+  .months::-webkit-scrollbar { display: none; }
+  .month-chip {
+    flex: none;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 99px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .month-chip[aria-selected="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  /* ---------- Итог ---------- */
+  .hero { padding: 0.5rem 0 1.25rem; }
+  .hero-label {
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .hero-value {
+    font-size: 2.6rem;
+    font-weight: 700;
+    line-height: 1.1;
+    margin: 0.15rem 0 0.3rem;
+  }
+  .hero-delta { font-size: 0.92rem; color: var(--ink-muted); }
+  .hero-delta b { font-weight: 600; }
+  .delta-up { color: var(--up); }
+  .delta-down { color: var(--down); }
+
+  /* ---------- Карточки ---------- */
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-bottom: 0.9rem;
+  }
+  .card h2 {
+    margin: 0 0 0.85rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    font-weight: 600;
+  }
+
+  /* ---------- График по дням ---------- */
+  .chart { width: 100%; height: 116px; display: block; overflow: visible; }
+  .chart .bar { fill: var(--accent); }
+  .chart .bar-quiet { fill: var(--accent); opacity: 0.32; }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .chart text { fill: var(--ink-muted); font-size: 9px; font-family: var(--font); }
+  .chart-caption {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: var(--ink-muted);
+    margin-top: 0.35rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- Категории ---------- */
+  .cat { margin-bottom: 0.8rem; }
+  .cat:last-child { margin-bottom: 0; }
+  .cat-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+  .cat-name { font-size: 0.94rem; }
+  .cat-sum { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .cat-share { color: var(--ink-muted); font-size: 0.82rem; margin-left: 0.35rem; font-weight: 400; }
+  .cat-track { height: 6px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
+  .cat-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+
+  /* ---------- Кто сколько ---------- */
+  .authors { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+  .author {
+    flex: 1 1 8rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+  }
+  .author-name { font-size: 0.82rem; color: var(--ink-muted); }
+  .author-sum { font-size: 1.15rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  /* ---------- Список трат ---------- */
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.2rem 0.75rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .row:first-child { border-top: none; }
+  .row-main { font-size: 0.95rem; }
+  .row-sum { font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .row-meta {
+    grid-column: 1 / -1;
+    font-size: 0.8rem;
+    color: var(--ink-muted);
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .tag {
+    background: var(--accent-soft);
+    color: var(--accent);
+    padding: 0.05rem 0.45rem;
+    border-radius: 99px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .row-delete {
+    background: none;
+    border: none;
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .row.removed { opacity: 0.4; }
+  .row.removed .row-main { text-decoration: line-through; }
+
+  /* ---------- Состояния ---------- */
+  .state {
+    text-align: center;
+    color: var(--ink-muted);
+    padding: 3rem 1rem;
+    font-size: 0.95rem;
+  }
+  .spinner {
+    width: 26px; height: 26px;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 0.8rem;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+  .empty { color: var(--ink-muted); font-size: 0.92rem; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="state"><div class="spinner"></div>Собираю данные…</div>
+</div>
+
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+  }
+
+  var app = document.getElementById('app');
+  var state = { month: '', data: null };
+
+  function money(value, currency) {
+    var rounded = Math.round((Number(value) || 0) * 100) / 100;
+    var parts = rounded.toFixed(2).split('.');
+    var whole = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    var cents = parts[1] === '00' ? '' : ',' + parts[1];
+    var symbols = { ILS: '₪', USD: '$', EUR: '€', RUB: '₽' };
+    return whole + cents + ' ' + (symbols[currency] || currency || '');
+  }
+
+  function escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function monthLabel(key) {
+    var names = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
+                 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    var parts = String(key).split('-');
+    return names[parseInt(parts[1], 10) - 1] + ' ' + parts[0].slice(2);
+  }
+
+  function request(action, extra) {
+    var body = Object.assign({
+      action: action,
+      initData: tg ? tg.initData : ''
+    }, extra || {});
+
+    return fetch('/api/data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (response) { return response.json(); });
+  }
+
+  // ---- график трат по дням: тонкие столбики, подпись только у крайних ----
+  function dailyChart(daily, currency) {
+    if (!daily.length) return '';
+
+    var max = daily.reduce(function (m, d) { return Math.max(m, d.sum); }, 0);
+    if (max <= 0) return '';
+
+    var width = 100;
+    var height = 100;
+    var gap = 0.35;
+    var barWidth = (width / daily.length) - gap;
+    var peak = daily.reduce(function (best, d) { return d.sum > best.sum ? d : best; }, daily[0]);
+
+    var bars = daily.map(function (d, index) {
+      var h = max > 0 ? (d.sum / max) * (height - 14) : 0;
+      var x = index * (width / daily.length);
+      var y = height - h;
+      var isPeak = d.day === peak.day && d.sum > 0;
+      // Скруглённые концы столбиков, прижатые к базовой линии
+      return '<rect class="' + (isPeak ? 'bar' : 'bar-quiet') + '" x="' + x.toFixed(2) +
+        '" y="' + y.toFixed(2) + '" width="' + Math.max(barWidth, 0.6).toFixed(2) +
+        '" height="' + Math.max(h, d.sum > 0 ? 0.8 : 0).toFixed(2) + '" rx="0.5"></rect>';
+    }).join('');
+
+    return '<svg class="chart" viewBox="0 0 100 100" preserveAspectRatio="none" ' +
+      'role="img" aria-label="Траты по дням месяца">' +
+      '<line class="grid" x1="0" y1="100" x2="100" y2="100" vector-effect="non-scaling-stroke"></line>' +
+      bars +
+      '</svg>' +
+      '<div class="chart-caption"><span>1-е</span>' +
+      '<span>пик: ' + peak.day + '-е, ' + money(peak.sum, currency) + '</span>' +
+      '<span>' + daily.length + '-е</span></div>';
+  }
+
+  function deltaLine(data) {
+    if (!data.prevTotal) {
+      return '<div class="hero-delta">Сравнить не с чем: за прошлый месяц записей нет</div>';
+    }
+    var diff = data.total - data.prevTotal;
+    var percent = Math.round((diff / data.prevTotal) * 100);
+    var cls = diff > 0 ? 'delta-up' : 'delta-down';
+    var sign = diff > 0 ? '+' : '−';
+    var arrow = diff > 0 ? '↑' : '↓';
+    return '<div class="hero-delta">К прошлому месяцу <b class="' + cls + '">' +
+      arrow + ' ' + sign + money(Math.abs(diff), data.currency) +
+      ' (' + sign + Math.abs(percent) + '%)</b></div>';
+  }
+
+  function render(data) {
+    state.data = data;
+
+    var months = data.months.map(function (key) {
+      return '<button class="month-chip" role="tab" data-month="' + key + '" aria-selected="' +
+        (key === data.month) + '">' + monthLabel(key) + '</button>';
+    }).join('');
+
+    var categories = data.categories.length
+      ? data.categories.map(function (cat) {
+          var width = data.categories[0].sum > 0 ? (cat.sum / data.categories[0].sum) * 100 : 0;
+          return '<div class="cat">' +
+            '<div class="cat-head"><span class="cat-name">' + escapeHtml(cat.name) +
+            '<span class="cat-share">' + cat.share + '%</span></span>' +
+            '<span class="cat-sum">' + money(cat.sum, data.currency) + '</span></div>' +
+            '<div class="cat-track"><div class="cat-fill" style="width:' + width.toFixed(1) + '%"></div></div>' +
+            '</div>';
+        }).join('')
+      : '<div class="empty">Пока ничего не записано</div>';
+
+    var authors = data.authors.length > 1
+      ? '<div class="card"><h2>Кто сколько записал</h2><div class="authors">' +
+        data.authors.map(function (a) {
+          return '<div class="author"><div class="author-name">' + escapeHtml(a.name) +
+            '</div><div class="author-sum">' + money(a.sum, data.currency) + '</div></div>';
+        }).join('') + '</div></div>'
+      : '';
+
+    var rows = data.expenses.length
+      ? data.expenses.map(function (item) {
+          var title = item.description || item.store || item.category;
+          var meta = [item.date, escapeHtml(item.category)];
+          if (item.store && item.description !== item.store) meta.push(escapeHtml(item.store));
+          return '<div class="row" data-id="' + item.id + '">' +
+            '<div class="row-main">' + escapeHtml(title) + '</div>' +
+            '<div class="row-sum">' + money(item.amount, item.currency) + '</div>' +
+            '<div class="row-meta"><span>' + item.date + '</span>' +
+            '<span class="tag">' + escapeHtml(item.category) + '</span>' +
+            (item.store ? '<span>' + escapeHtml(item.store) + '</span>' : '') +
+            '<span>' + escapeHtml(item.author) + '</span>' +
+            '<button class="row-delete" data-delete="' + item.id + '">удалить</button>' +
+            '</div></div>';
+        }).join('')
+      : '<div class="empty">За этот месяц записей нет</div>';
+
+    app.innerHTML =
+      '<div class="months" role="tablist">' + months + '</div>' +
+      '<div class="wrap">' +
+        '<div class="hero">' +
+          '<div class="hero-label">' + escapeHtml(data.monthTitle) + '</div>' +
+          '<div class="hero-value">' + money(data.total, data.currency) + '</div>' +
+          deltaLine(data) +
+        '</div>' +
+        (data.total > 0 ? '<div class="card"><h2>По дням</h2>' + dailyChart(data.daily, data.currency) + '</div>' : '') +
+        '<div class="card"><h2>По категориям</h2>' + categories + '</div>' +
+        authors +
+        '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
+      '</div>';
+  }
+
+  function showError(text) {
+    app.innerHTML = '<div class="state">' + escapeHtml(text) + '</div>';
+  }
+
+  function load(month) {
+    app.innerHTML = '<div class="state"><div class="spinner"></div>Собираю данные…</div>';
+    request('data', { month: month || '' })
+      .then(function (data) {
+        if (!data.ok) return showError(data.error || 'Не удалось загрузить данные');
+        render(data);
+      })
+      .catch(function () {
+        showError('Не удалось связаться с таблицей. Попробуйте открыть заново.');
+      });
+  }
+
+  // Переключение месяцев и удаление записей
+  app.addEventListener('click', function (event) {
+    var chip = event.target.closest('.month-chip');
+    if (chip) {
+      state.month = chip.dataset.month;
+      load(state.month);
+      return;
+    }
+
+    var button = event.target.closest('[data-delete]');
+    if (button) {
+      var row = button.closest('.row');
+      button.disabled = true;
+      button.textContent = 'удаляю…';
+      request('delete', { id: button.dataset.delete })
+        .then(function (answer) {
+          if (answer.ok) {
+            row.classList.add('removed');
+            button.textContent = 'удалено';
+            if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+          } else {
+            button.disabled = false;
+            button.textContent = 'не вышло';
+          }
+        })
+        .catch(function () {
+          button.disabled = false;
+          button.textContent = 'не вышло';
+        });
+    }
+  });
+
+  if (!tg || !tg.initData) {
+    showError('Откройте эту страницу кнопкой «Бюджет» в чате с ботом.');
+  } else {
+    load('');
+  }
+})();
+</script>
+</body>
+</html>

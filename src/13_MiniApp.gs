@@ -1,0 +1,276 @@
+/**
+ * 13_MiniApp.gs — данные для мини-приложения в телеграме.
+ *
+ * Страница живёт на Vercel, а данные берёт отсюда. Запрос приходит через того
+ * же посредника, что и сообщения бота, но с пометкой mode=data.
+ *
+ * Кто спрашивает — проверяется по подписи, которую телеграм выдаёт мини-приложению.
+ * Подпись считается по токену бота, а он есть только здесь, на стороне Google.
+ * Поэтому посреднику доверять ничего не приходится: он просто передаёт запрос.
+ */
+
+// Подпись живёт сутки: дольше держать открытую страницу смысла нет
+var MINIAPP_MAX_AGE_SECONDS = 86400;
+
+// Адрес страницы мини-приложения — свой у каждой установки, поэтому берётся
+// из свойства скрипта MINIAPP_URL, а в коде его нет. Чужой адрес тут был бы
+// хуже пустого: страница открылась бы, но данных не показала.
+var MINIAPP_DEFAULT_URL = '';
+
+/**
+ * Проверяет подпись телеграма и возвращает {ok, userId, name, error}.
+ *
+ * initData — строка вида «query_id=…&user=…&auth_date=…&hash=…», её отдаёт
+ * телеграм самой странице при открытии.
+ */
+function verifyTelegramInitData_(initData) {
+  if (!initData) return { ok: false, error: 'Нет данных авторизации' };
+
+  var pairs = String(initData).split('&');
+  var hash = '';
+  var fields = [];
+
+  pairs.forEach(function (pair) {
+    var index = pair.indexOf('=');
+    if (index === -1) return;
+    var key = pair.substring(0, index);
+    var value = pair.substring(index + 1);
+    if (key === 'hash') {
+      hash = value;
+    } else {
+      fields.push({ key: key, value: decodeURIComponent(value) });
+    }
+  });
+
+  if (!hash) return { ok: false, error: 'Нет подписи' };
+
+  // Строка для проверки: пары «ключ=значение», отсортированные по ключу
+  fields.sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+  var dataCheckString = fields.map(function (f) { return f.key + '=' + f.value; }).join('\n');
+
+  // Ключ подписи выводится из токена бота
+  var secretKey = Utilities.computeHmacSha256Signature(getBotToken_(), 'WebAppData');
+  var signature = Utilities.computeHmacSha256Signature(
+    Utilities.newBlob(dataCheckString).getBytes(),
+    secretKey
+  );
+
+  var computed = signature.map(function (byte) {
+    var hex = (byte < 0 ? byte + 256 : byte).toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  }).join('');
+
+  if (computed !== hash) return { ok: false, error: 'Подпись не сходится' };
+
+  // Просроченная подпись не годится: страницу могли открыть давно
+  var authDate = 0;
+  var userJson = '';
+  fields.forEach(function (f) {
+    if (f.key === 'auth_date') authDate = parseInt(f.value, 10) || 0;
+    if (f.key === 'user') userJson = f.value;
+  });
+
+  var ageSeconds = Math.floor(new Date().getTime() / 1000) - authDate;
+  if (!authDate || ageSeconds > MINIAPP_MAX_AGE_SECONDS) {
+    return { ok: false, error: 'Данные авторизации устарели, откройте заново' };
+  }
+
+  var user = {};
+  try {
+    user = JSON.parse(userJson);
+  } catch (err) {
+    return { ok: false, error: 'Не разобрать данные пользователя' };
+  }
+
+  if (!isAllowedUser_(user.id)) {
+    logEvent_('Мини-приложение: чужой', { userId: user.id, name: user.first_name || '' });
+    return { ok: false, error: 'Доступ ограничен' };
+  }
+
+  // Имя берём то же, что и в таблице: заданное в настройках, а не телеграмное.
+  // Иначе один и тот же человек в записях «Толя», а в приветствии «Anatoly».
+  return {
+    ok: true,
+    userId: user.id,
+    name: userDisplayName_({
+      id: user.id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      username: user.username
+    })
+  };
+}
+
+/**
+ * Собирает данные для страницы.
+ * monthKey — «ГГГГ-ММ»; пусто = текущий месяц.
+ */
+function miniAppPayload_(monthKey) {
+  var base = baseCurrency_();
+  var now = new Date();
+
+  var month = parseMonthKey_(monthKey) || new Date(now.getFullYear(), now.getMonth(), 1);
+  var from = monthStart_(month);
+  var to = monthEnd_(month);
+
+  var all = readExpenses_({});
+  var expenses = all.filter(function (item) { return item.date >= from && item.date <= to; });
+
+  var prevMonth = new Date(month.getFullYear(), month.getMonth() - 1, 1);
+  var prevExpenses = all.filter(function (item) {
+    return item.date >= monthStart_(prevMonth) && item.date <= monthEnd_(prevMonth);
+  });
+
+  var total = totalOf_(expenses);
+
+  // Какие месяцы вообще есть в таблице — для переключателя
+  var monthsSeen = {};
+  all.forEach(function (item) {
+    monthsSeen[monthKeyOf_(item.date)] = true;
+  });
+  var months = Object.keys(monthsSeen).sort().reverse();
+  var currentKey = monthKeyOf_(month);
+  if (months.indexOf(currentKey) === -1) months.unshift(currentKey);
+
+  // Траты по дням — для графика
+  var byDay = {};
+  expenses.forEach(function (item) {
+    var day = item.date.getDate();
+    byDay[day] = (byDay[day] || 0) + item.baseAmount;
+  });
+  var daysInMonth = to.getDate();
+  var daily = [];
+  for (var day = 1; day <= daysInMonth; day++) {
+    daily.push({ day: day, sum: Math.round((byDay[day] || 0) * 100) / 100 });
+  }
+
+  return {
+    ok: true,
+    currency: base,
+    month: currentKey,
+    monthTitle: monthTitle_(month),
+    months: months.slice(0, 24),
+    total: Math.round(total * 100) / 100,
+    prevTotal: Math.round(totalOf_(prevExpenses) * 100) / 100,
+    count: expenses.length,
+    daily: daily,
+    categories: groupBy_(expenses, 'category').map(function (group) {
+      return {
+        name: group.key,
+        sum: Math.round(group.sum * 100) / 100,
+        count: group.count,
+        share: total > 0 ? Math.round((group.sum / total) * 1000) / 10 : 0
+      };
+    }),
+    authors: groupBy_(expenses, 'author').map(function (group) {
+      return { name: group.key, sum: Math.round(group.sum * 100) / 100, count: group.count };
+    }),
+    expenses: expenses.slice().reverse().map(function (item) {
+      return {
+        id: item.id,
+        date: formatDate_(item.date),
+        amount: item.amount,
+        currency: item.currency,
+        baseAmount: item.baseAmount,
+        category: item.category,
+        subcategory: item.subcategory,
+        description: item.description,
+        store: item.store,
+        author: item.author,
+        sourceType: item.sourceType
+      };
+    })
+  };
+}
+
+function monthKeyOf_(date) {
+  var month = date.getMonth() + 1;
+  return date.getFullYear() + '-' + (month < 10 ? '0' + month : month);
+}
+
+function parseMonthKey_(key) {
+  var m = String(key || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, 1);
+}
+
+/**
+ * Точка входа для запроса данных: проверяет подпись и отдаёт содержимое.
+ * Вызывается из doPost, когда пришёл запрос с mode=data.
+ */
+function handleMiniAppRequest_(body) {
+  var check = verifyTelegramInitData_(body.initData);
+  if (!check.ok) {
+    return { ok: false, error: check.error };
+  }
+
+  try {
+    var payload = miniAppPayload_(body.month);
+    payload.viewer = check.name;
+    return payload;
+  } catch (err) {
+    logEvent_('Сбой мини-приложения', { error: String(err), user: check.name });
+    return { ok: false, error: 'Не удалось собрать данные: ' + err };
+  }
+}
+
+/**
+ * Удаление записи из мини-приложения — та же пометка, что и кнопкой в чате.
+ */
+function handleMiniAppDelete_(body) {
+  var check = verifyTelegramInitData_(body.initData);
+  if (!check.ok) return { ok: false, error: check.error };
+
+  var deleted = markExpenseDeleted_(body.id);
+  if (deleted) logEvent_('Запись удалена из мини-приложения', { id: body.id, user: check.name });
+  return { ok: deleted, error: deleted ? '' : 'Запись не найдена' };
+}
+
+// ---------------------------------------------------------------------------
+// Кнопка запуска (запускать вручную)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ставит кнопку мини-приложения рядом с полем ввода в чате с ботом.
+ * Адрес страницы берётся из свойства скрипта MINIAPP_URL.
+ */
+function setMiniAppButton() {
+  var url = scriptProp_('MINIAPP_URL') || MINIAPP_DEFAULT_URL;
+
+  if (!url) {
+    var hint = 'Не задан адрес мини-приложения. Впишите свойство скрипта ' +
+      'MINIAPP_URL — это адрес вашей страницы на Vercel, вида ' +
+      'https://имя-проекта.vercel.app/';
+    console.log(hint);
+    return hint;
+  }
+
+  var result = tgCall_('setChatMenuButton', {
+    menu_button: {
+      type: 'web_app',
+      text: 'Бюджет',
+      web_app: { url: url }
+    }
+  });
+
+  if (!result || !result.ok) {
+    var failed = 'Телеграм не принял кнопку. Ответ: ' + JSON.stringify(result);
+    console.log(failed);
+    return failed;
+  }
+
+  var report = 'Кнопка «Бюджет» поставлена рядом с полем ввода в чате с ботом.\n' +
+    'Адрес страницы: ' + url + '\n\n' +
+    'Если кнопка не появилась сразу — закройте и откройте чат с ботом заново.';
+  console.log(report);
+  return report;
+}
+
+/**
+ * Убирает кнопку мини-приложения, возвращая обычное меню команд.
+ */
+function removeMiniAppButton() {
+  var result = tgCall_('setChatMenuButton', { menu_button: { type: 'commands' } });
+  console.log(JSON.stringify(result));
+  return result;
+}

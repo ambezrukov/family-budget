@@ -1,0 +1,12 @@
+# Секреты и личные привязки — в репозиторий не идут
+.env
+.env.*
+!.env.example
+.clasp.json
+.deploy.json
+.vercel/
+node_modules/
+
+# Временные файлы проверок
+tests/_sandbox.js
+*.log
