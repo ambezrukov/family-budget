@@ -1638,6 +1638,16 @@ check('объяснено, что делать с файлом',
 check('предупреждение про развёртывание есть',
   /развёртывани/i.test(sent[sent.length - 1].text));
 
+check('в указаниях учтён проект из нескольких файлов',
+  /00_Config/.test(sent[sent.length - 1].text), sent[sent.length - 1].text.slice(-200));
+
+// «/versiya» сразу говорит, отстал ли человек от свежей версии
+post({ message: msg({ text: '/versiya' }) });
+check('версия показана', new RegExp(ctx.BOT_VERSION).test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 80));
+check('сказано, что есть новее', /Вышла новее/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 120));
+
 // Обрывок вместо кода отправлять нельзя — человек вставит мусор в редактор
 M.setWebResponder((url) => {
   if (url.indexOf('/dist/version.json') !== -1) {

@@ -152,8 +152,7 @@ function handleCommand_(message, text) {
       return;
     case '/versiya':
     case '/version':
-      tgSend_(chatId, 'Версия бота: <b>' + escapeHtml_(BOT_VERSION) + '</b>\n' +
-        '<i>Проверить обновления — /obnovit</i>');
+      tgSend_(chatId, versionReport_());
       return;
     case '/avtory':
     case '/authors':
