@@ -6974,6 +6974,54 @@ function updateDeployments_(scriptId, versionNumber) {
   return moved;
 }
 
+/**
+ * Что бот на самом деле может со своим кодом.
+ *
+ * Запускается вручную из редактора, когда обновление не ставится. Права
+ * в манифесте и права в выданном токене — разные вещи: манифест только просит,
+ * а выдаёт их владелец в диалоге согласия. Здесь видно, что вышло на деле.
+ *
+ * Итог пишется в лист «Лог», чтобы его можно было прочитать не из редактора.
+ */
+function checkUpdatePermissions() {
+  var report = { версия: BOT_VERSION };
+
+  try {
+    var token = ScriptApp.getOAuthToken();
+    var info = UrlFetchApp.fetch(
+      'https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(token),
+      { muteHttpExceptions: true }
+    );
+    var scopes = '';
+    if (info.getResponseCode() === 200) {
+      scopes = String(JSON.parse(info.getContentText()).scope || '');
+    }
+    report.естьПравоНаКод = scopes.indexOf('script.projects') !== -1;
+    report.естьПравоНаРазвёртывания = scopes.indexOf('script.deployments') !== -1;
+    report.всеПрава = scopes.replace(/https:\/\/www\.googleapis\.com\/auth\//g, '');
+  } catch (err) {
+    report.токен = String(err);
+  }
+
+  // Проба на чтение: если и она отказывает, дело точно в правах, а не в записи
+  try {
+    var read = UrlFetchApp.fetch(SCRIPT_API + ScriptApp.getScriptId() + '/content', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    report.чтениеКода = read.getResponseCode();
+    if (read.getResponseCode() !== 200) {
+      report.ответGoogle = read.getContentText().substring(0, 300);
+    }
+  } catch (err) {
+    report.чтениеКода = String(err);
+  }
+
+  logEvent_('Проверка прав на обновление', report);
+  console.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
 // ---------------------------------------------------------------------------
 // Триггер
 // ---------------------------------------------------------------------------
