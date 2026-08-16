@@ -137,6 +137,10 @@ function handleCommand_(message, text) {
     case '/name':
       handleAuthorName_(message, text);
       return;
+    case '/avtory':
+    case '/authors':
+      handleAuthorsList_(message, text);
+      return;
     case '/miniapp':
       handleMiniAppUrl_(message, text);
       return;
@@ -206,6 +210,80 @@ function handleAuthorName_(message, text) {
     'Поменять можно этой же командой.</i>');
 
   tgSend_(chatId, lines.join('\n'));
+}
+
+/**
+ * Кто под какими именами записан в таблице — и как свести их воедино.
+ *
+ * Пока имя не задано, записи подписываются именем из телеграма. Стоит задать
+ * имя позже — и в отчётах один человек оказывается двумя: «Толя» и «Sizif».
+ * Здесь видно все имена сразу, а нажатие кнопки переподписывает выбранное имя
+ * на имя нажавшего.
+ *
+ * Можно и без кнопок, если человека нет рядом: «/avtory Мария Безрукова = Маша».
+ */
+function handleAuthorsList_(message, text) {
+  var chatId = message.chat.id;
+  var argument = String(text || '').replace(/^\/\S+\s*/, '').trim();
+
+  // Прямое переименование: «старое имя = новое имя»
+  if (argument.indexOf('=') !== -1) {
+    var parts = argument.split('=');
+    var from = parts[0].trim();
+    var to = parts.slice(1).join('=').trim();
+
+    if (!from || !to) {
+      tgSend_(chatId, 'Нужно два имени через знак равенства:\n' +
+        '<code>/avtory Мария Безрукова = Маша</code>');
+      return;
+    }
+
+    var renamedDirect = renameAuthorInExpenses_([from], to);
+    logEvent_('Имена авторов объединены', { было: from, стало: to, записей: renamedDirect });
+    tgSend_(chatId, renamedDirect
+      ? 'Переподписал записей: <b>' + renamedDirect + '</b>. Теперь они на «' + escapeHtml_(to) + '».'
+      : 'Записей с именем «' + escapeHtml_(from) + '» не нашёл. Посмотрите список: /avtory');
+    return;
+  }
+
+  var authors = authorCounts_();
+  if (!authors.length) {
+    tgSend_(chatId, 'Записей пока нет.');
+    return;
+  }
+
+  var mine = userDisplayName_(message.from);
+  var lines = ['<b>Кто как подписан в таблице</b>', ''];
+  var keyboard = [];
+
+  authors.forEach(function (author) {
+    var isMine = author.name === mine;
+    lines.push('• ' + escapeHtml_(author.name) + ' — ' + author.count +
+      (isMine ? ' <i>(это вы)</i>' : ''));
+    if (!isMine) {
+      keyboard.push([{
+        text: '↔️ «' + shorten_(author.name, 20) + '» — это я',
+        callback_data: 'author:' + stashValue_({ name: author.name })
+      }]);
+    }
+  });
+
+  if (!keyboard.length) {
+    lines.push('');
+    lines.push('<i>Все записи под одним именем — сводить нечего.</i>');
+    tgSend_(chatId, lines.join('\n'));
+    return;
+  }
+
+  lines.push('');
+  lines.push('Если какое-то из этих имён — тоже вы, нажмите кнопку: перепишу');
+  lines.push('те записи на «<b>' + escapeHtml_(mine) + '</b>».');
+  lines.push('');
+  lines.push('<i>За другого человека это делать не нужно — пусть он сам напишет ' +
+    '/imya со своим именем. Или переименуйте вручную: ' +
+    '«/avtory старое имя = новое имя».</i>');
+
+  tgSend_(chatId, lines.join('\n'), keyboard);
 }
 
 /**
@@ -1356,6 +1434,30 @@ function handleCallback_(callback) {
     stashKeyboard_(messageId, message.reply_markup ? message.reply_markup.inline_keyboard : null);
     var catRecord = readExpenseById_(catId);
     tgEditKeyboard_(chatId, messageId, categoriesKeyboard_(catId, catRecord ? catRecord.kind : 'расход'));
+    return;
+  }
+
+  // «Это тоже я» — свести чужое на вид имя со своим
+  if (data.indexOf('author:') === 0) {
+    var chosenAuthor = unstashValue_(data.substring(7));
+    if (!chosenAuthor || !chosenAuthor.name) {
+      tgAnswerCallback_(callback.id, 'Список устарел, наберите /avtory заново');
+      return;
+    }
+
+    var myName = userDisplayName_(from);
+    var moved = renameAuthorInExpenses_([chosenAuthor.name], myName);
+    tgAnswerCallback_(callback.id, moved ? 'Переподписал: ' + moved : 'Записей не нашёл');
+    logEvent_('Имена авторов объединены кнопкой', {
+      было: chosenAuthor.name, стало: myName, записей: moved
+    });
+
+    if (moved) {
+      tgEditText_(chatId, messageId,
+        '✅ Записи с именем «' + escapeHtml_(chosenAuthor.name) + '» теперь подписаны как <b>' +
+        escapeHtml_(myName) + '</b>.\nПереподписал: <b>' + moved + '</b>.\n\n' +
+        '<i>Проверить, что осталось — /avtory</i>', []);
+    }
     return;
   }
 

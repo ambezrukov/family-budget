@@ -215,6 +215,7 @@ function setBotCommands() {
       { command: 'otchet', description: 'Отчёт за прошлый месяц' },
       { command: 'spravka', description: 'Как вводить расходы' },
       { command: 'imya', description: 'Как подписывать меня в таблице' },
+      { command: 'avtory', description: 'Свести имена авторов' },
       { command: 'whoami', description: 'Показать мой телеграм-айди' }
     ]
   });

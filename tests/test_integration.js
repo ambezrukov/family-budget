@@ -1458,6 +1458,40 @@ post({ message: msg({ from: STRANGER, text: '/imya Толя=Маша, я' }) });
 check('имя со служебными знаками отклонено', /должно быть коротким/.test(sent[sent.length - 1].text),
   sent[sent.length - 1].text.slice(0, 60));
 
+// Записи, сделанные до настройки имён, остаются под телеграмным именем:
+// подделываем такую строку и сводим её кнопкой
+console.log('\n=== Свести имена в таблице ===');
+const rowsForAuthor = expenses().getLastRow();
+expenses().getRange(rowsForAuthor, 11).setValue('Sizif');
+
+post({ message: msg({ from: STRANGER, text: '/avtory' }) });
+const authorsMsg = sent[sent.length - 1];
+check('в списке видно чужое на вид имя', /Sizif/.test(authorsMsg.text), authorsMsg.text.slice(0, 120));
+check('своё имя помечено', /это вы/.test(authorsMsg.text), authorsMsg.text.slice(0, 160));
+check('есть кнопка «это я»',
+  JSON.stringify(authorsMsg.reply_markup || {}).includes('author:'),
+  JSON.stringify(authorsMsg.reply_markup || {}).slice(0, 120));
+
+const authorBtn = authorsMsg.reply_markup.inline_keyboard
+  .flat().find(b => b.text.includes('Sizif'));
+post({ callback_query: { id: 'au1', from: STRANGER, data: authorBtn.callback_data,
+  message: { message_id: 400, chat: { id: 555 }, text: 'Кто как подписан' } } });
+check('запись переподписана', expenses().getRange(rowsForAuthor, 11).getValues()[0][0] === 'Толя',
+  String(expenses().getRange(rowsForAuthor, 11).getValues()[0][0]));
+check('бот отчитался', /теперь подписаны как/.test(edits[edits.length - 1].text),
+  edits[edits.length - 1].text.slice(0, 80));
+
+// Второй способ — переименование за другого, текстом
+expenses().getRange(rowsForAuthor, 11).setValue('Мария Безрукова');
+post({ message: msg({ from: STRANGER, text: '/avtory Мария Безрукова = Маша' }) });
+check('переименование текстом сработало',
+  expenses().getRange(rowsForAuthor, 11).getValues()[0][0] === 'Маша',
+  String(expenses().getRange(rowsForAuthor, 11).getValues()[0][0]));
+
+post({ message: msg({ from: STRANGER, text: '/avtory Кого-то = ' }) });
+check('половинчатая команда отклонена', /через знак равенства/.test(sent[sent.length - 1].text),
+  sent[sent.length - 1].text.slice(0, 60));
+
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');
 check('самопроверка отработала', selfCheckText.includes('Проверка настройки'));

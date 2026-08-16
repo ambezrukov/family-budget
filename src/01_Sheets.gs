@@ -270,24 +270,63 @@ function renameAuthorInExpenses_(oldNames, newName) {
 
   if (!wanted.length) return 0;
 
-  var sheet = expensesSheet_();
-  var last = sheet.getLastRow();
-  if (last < 2) return 0;
-
-  var range = sheet.getRange(2, COL_AUTHOR, last - 1, 1);
-  var values = range.getValues();
   var changed = 0;
 
-  for (var i = 0; i < values.length; i++) {
-    var current = String(values[i][0] || '').trim();
-    if (current && wanted.indexOf(current.toLowerCase()) !== -1) {
-      values[i][0] = newName;
-      changed++;
-    }
-  }
+  // Доходы правим тоже: иначе человек, переименовавшись, останется в отчёте
+  // по доходам под старым именем
+  [SHEET_EXPENSES, SHEET_INCOMES].forEach(function (sheetName) {
+    var sheet = ensureSheet_(sheetName, EXPENSE_COLUMNS);
+    var last = sheet.getLastRow();
+    if (last < 2) return;
 
-  if (changed) range.setValues(values);
+    var range = sheet.getRange(2, COL_AUTHOR, last - 1, 1);
+    var values = range.getValues();
+    var touched = 0;
+
+    for (var i = 0; i < values.length; i++) {
+      var current = String(values[i][0] || '').trim();
+      if (current && wanted.indexOf(current.toLowerCase()) !== -1) {
+        values[i][0] = newName;
+        touched++;
+      }
+    }
+
+    if (touched) {
+      range.setValues(values);
+      changed += touched;
+    }
+  });
+
   return changed;
+}
+
+/**
+ * Все имена авторов, встречающиеся в записях, с числом записей у каждого.
+ *
+ * Нужно, чтобы показать человеку, под какими именами он успел записаться:
+ * пока имя не задано, записи подписываются именем из телеграма, и один
+ * человек в отчётах выглядит двумя-тремя.
+ */
+function authorCounts_() {
+  var counts = {};
+
+  [SHEET_EXPENSES, SHEET_INCOMES].forEach(function (sheetName) {
+    var sheet = ensureSheet_(sheetName, EXPENSE_COLUMNS);
+    var last = sheet.getLastRow();
+    if (last < 2) return;
+
+    var values = sheet.getRange(2, 1, last - 1, EXPENSE_COLUMNS.length).getValues();
+    values.forEach(function (row) {
+      if (String(row[COL_DELETED - 1]).trim() !== '') return; // удалённые не в счёт
+      var name = String(row[COL_AUTHOR - 1] || '').trim();
+      if (!name) return;
+      counts[name] = (counts[name] || 0) + 1;
+    });
+  });
+
+  return Object.keys(counts)
+    .map(function (name) { return { name: name, count: counts[name] }; })
+    .sort(function (a, b) { return b.count - a.count; });
 }
 
 // ---------------------------------------------------------------------------
