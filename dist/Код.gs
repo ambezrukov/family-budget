@@ -44,7 +44,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.5.4';
+var BOT_VERSION = '1.5.5';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -6818,7 +6818,10 @@ function sendUpdateInstructions_(chatId) {
     return false;
   }
 
-  tgSendDocument_(chatId, Utilities.newBlob(code, 'text/plain', 'Код.gs'),
+  // Имя латиницей: кириллица в имени файла при отправке теряется, и человек
+  // получает документ без названия — непонятно, что это и зачем
+  tgSendDocument_(chatId,
+    Utilities.newBlob(code, 'text/plain', 'family-budget-' + latest.version + '.gs'),
     'Код версии ' + latest.version);
 
   tgSend_(chatId, [

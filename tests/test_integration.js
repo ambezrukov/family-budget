@@ -1632,6 +1632,9 @@ post({ callback_query: { id: 'up1', from: HUSBAND, data: 'update:9.9.9',
   message: { message_id: 500, chat: { id: 555 }, text: 'Вышло обновление' } } });
 check('код прислан файлом', documents.length === 1, 'файлов: ' + documents.length);
 check('в подписи указана версия', /9\.9\.9/.test(documents[0].caption || ''), documents[0].caption);
+check('имя файла латиницей и с версией',
+  /^family-budget-9\.9\.9\.gs$/.test(documents[0].document.getName()),
+  documents[0].document.getName());
 check('объяснено, что делать с файлом',
   /Расширения → Apps Script/.test(sent[sent.length - 1].text),
   sent[sent.length - 1].text.slice(0, 120));
