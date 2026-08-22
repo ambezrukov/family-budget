@@ -364,7 +364,7 @@ function fetchLinkJson_(url) {
  * чтобы дальше запись шла общим путём. Или null.
  */
 function receiptFromLink_(url, comment) {
-  var page = fetchLink_(url);
+  var page = fetchLink_(url) || ramiLevyPdfFallback_(url);
   if (!page) return null;
 
   // 1. Известный сервис цифровых чеков
@@ -385,6 +385,26 @@ function receiptFromLink_(url, comment) {
 
   logEvent_('По ссылке неизвестный тип содержимого', { url: page.url, type: type });
   return null;
+}
+
+/**
+ * Последняя попытка для «Рами Леви»: у чека, кроме страницы, есть PDF-версия
+ * по адресу /api/receipts/{номер}/pdf. Защита сайта смотрит на страницы
+ * строже, чем на файлы, поэтому файл иногда доходит там, где страница нет.
+ *
+ * Данные из PDF читает модель — они выйдут чуть менее точными, чем со
+ * страницы, но это лучше, чем просить фотографировать бумажный чек.
+ */
+function ramiLevyPdfFallback_(url) {
+  var parts = parseUrl_(url);
+  if (!parts || !/(^|\.)rami-levy\.co\.il$/.test(parts.host)) return null;
+
+  var id = String(parts.path || '').replace(/^\/+|\/+$/g, '');
+  if (!id || id.indexOf('/') !== -1) return null; // адрес чека — один короткий кусок
+
+  var page = fetchLink_(parts.origin + '/api/receipts/' + id + '/pdf');
+  if (page) logEvent_('Чек «Рами Леви» взят PDF-файлом', { url: page.url });
+  return page;
 }
 
 /**
