@@ -261,7 +261,10 @@ function miniAppPayload_(monthKey) {
         description: item.description,
         store: item.store,
         author: item.author,
-        sourceType: item.sourceType
+        sourceType: item.sourceType,
+        // Строку из выписки удалять нечего: она отражает то, что уже
+        // случилось со счётом. Поправить её можно только в таблице
+        fromStatement: !!item.fromOperations
       };
     })
   };

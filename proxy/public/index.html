@@ -527,7 +527,10 @@
             '<span class="tag">' + escapeHtml(item.category) + '</span>' +
             (item.store ? '<span>' + escapeHtml(item.store) + '</span>' : '') +
             '<span>' + escapeHtml(item.author) + '</span>' +
-            '<button class="row-delete" data-delete="' + item.id + '">удалить</button>' +
+            // Траты из выписок не удаляются: это слепок движения по счёту
+            (item.fromStatement
+              ? '<span class="tag">' + escapeHtml(item.sourceType || 'выписка') + '</span>'
+              : '<button class="row-delete" data-delete="' + item.id + '">удалить</button>') +
             '</div></div>';
         }).join('')
       : '<div class="empty">За этот месяц записей нет</div>';
