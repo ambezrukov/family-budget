@@ -134,5 +134,35 @@ if (pairs.length) {
   check('после склейки пара не предлагается снова', call('findMergeCandidates_').length === 0);
 }
 
+console.log('\n=== Справочники из чата ===');
+
+const cardsMessage = [
+  '/spravochnik карты',
+  '9926 | ויזה שופרסל | Cal | Мария | продукты и рестораны | 2 | активна',
+  '8322 | מסטרקארד | Isracard | Анатолий | подписки | 15 | активна'
+].join('\n');
+
+call('handleDirectoryUpload_', { chat: { id: 1 }, from: { id: 1 } }, cardsMessage);
+const cards = call('readCards_');
+check('карты записаны', Object.keys(cards).length === 2, JSON.stringify(Object.keys(cards)));
+check('владелец на месте', cards['9926'] && cards['9926'].owner === 'Мария',
+  cards['9926'] && cards['9926'].owner);
+
+// Повторная присылка заменяет справочник целиком, а не копит дубли
+call('handleDirectoryUpload_', { chat: { id: 1 }, from: { id: 1 } }, cardsMessage);
+check('повтор не задвоил записи', Object.keys(call('readCards_')).length === 2,
+  String(Object.keys(call('readCards_')).length));
+
+call('handleDirectoryUpload_', { chat: { id: 1 }, from: { id: 1 } }, [
+  '/spravochnik источники',
+  'Isracard | https://web.isracard.co.il | 9189, 8322 | Выгрузить Excel по каждой карте | Excel | еженедельно | 2'
+].join('\n'));
+const sources = call('miniAppSources_');
+check('источник виден странице', sources.length === 1 && sources[0].name === 'Isracard',
+  JSON.stringify(sources.map(s => s.name)));
+check('карты источника связаны с реестром',
+  sources[0].cards.length === 2 && sources[0].cards[1].owner === 'Анатолий',
+  JSON.stringify(sources[0].cards));
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

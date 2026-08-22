@@ -37,6 +37,14 @@ class Range {
     });
     return this;
   }
+  clearContent() {
+    for (let r = 0; r < this.numRows; r++) {
+      const rowData = this.sheet.data[this.row - 1 + r];
+      if (!rowData) continue;
+      for (let c = 0; c < this.numCols; c++) rowData[this.col - 1 + c] = '';
+    }
+    return this;
+  }
   setValue(v) {
     if (!this.sheet.data[this.row - 1]) this.sheet.data[this.row - 1] = [];
     this.sheet.data[this.row - 1][this.col - 1] = v;

@@ -161,6 +161,9 @@ function handleCommand_(message, text) {
     case '/importt':
       importFromFolder_(chatId);
       return;
+    case '/spravochnik':
+      handleDirectoryUpload_(message, text);
+      return;
     case '/versiya':
     case '/version':
       tgSend_(chatId, versionReport_());
