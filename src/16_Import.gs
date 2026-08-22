@@ -66,6 +66,20 @@ var STATEMENT_FORMATS_ = [
     }
   },
   {
+    source: 'Bit',
+    marker: ['מאת/ל'],
+    columns: {
+      date: ['תאריך'],
+      merchant: ['מאת/ל'],
+      amount: ['סכום'],
+      fee: ['סכום עמלה'],
+      method: ['אמצעי תשלום'],
+      direction: ['זיכוי/חיוב'],
+      status: ['סטטוס'],
+      note: ['תאור']
+    }
+  },
+  {
     source: 'Банк',
     marker: ['חובה', 'זכות'],
     columns: {
@@ -107,10 +121,21 @@ function detectStatementFormat_(rows) {
       var index = {};
       Object.keys(format.columns).forEach(function (field) {
         var variants = format.columns[field];
-        for (var c = 0; c < cells.length; c++) {
-          for (var v = 0; v < variants.length; v++) {
-            if (cells[c] && cells[c].indexOf(variants[v]) !== -1 && index[field] === undefined) {
-              index[field] = c;
+
+        // Сначала ищем точное совпадение названия: у Bit рядом стоят «סכום»
+        // (сумма) и «סכום עמלה» (комиссия), и поиск по вхождению отдал бы
+        // сумме графу комиссии — то есть ноль вместо денег
+        for (var v = 0; v < variants.length && index[field] === undefined; v++) {
+          for (var c = 0; c < cells.length; c++) {
+            if (cells[c] === variants[v]) { index[field] = c; break; }
+          }
+        }
+
+        if (index[field] !== undefined) return;
+        for (var c2 = 0; c2 < cells.length; c2++) {
+          for (var v2 = 0; v2 < variants.length; v2++) {
+            if (cells[c2] && cells[c2].indexOf(variants[v2]) !== -1 && index[field] === undefined) {
+              index[field] = c2;
             }
           }
         }
@@ -324,7 +349,38 @@ function parseStatement_(rows, fileName, sheetName) {
       file: fileName || ''
     };
 
-    if (format.source === 'Банк') {
+    if (format.source === 'Bit') {
+      // Bit — не отдельный кошелёк, а способ заплатить. Если платёж прошёл
+      // «כרטיס אשראי», та же сумма придёт из выписки карты, и считать её
+      // тратой ещё и здесь нельзя. Зато Bit знает то, чего нет в выписке
+      // карты: кому и за что переведено
+      var status = String(cell(row, 'status') || '');
+      if (status && status.indexOf('בוצע') === -1) continue; // отменённые не считаем
+
+      var method = String(cell(row, 'method') || '');
+      var direction = String(cell(row, 'direction') || '');
+      var byCard = method.indexOf('כרטיס') !== -1;
+
+      operation.amount = parseStatementNumber_(cell(row, 'amount'));
+      if (!operation.amount) continue;
+
+      operation.merchant = String(cell(row, 'merchant') || '').trim();
+      operation.note = [statementNote_(cell(row, 'note'), headerText), method]
+        .filter(function (part) { return part; }).join(' · ');
+
+      if (direction.indexOf('זיכוי') !== -1) {
+        operation.kind = 'поступление';
+        operation.notTrackable = 'да';
+      } else if (byCard) {
+        operation.kind = 'перевод Bit картой';
+        operation.notTrackable = 'да'; // трата придёт из выписки карты
+      } else {
+        operation.kind = 'перевод Bit'; // с баланса Bit: в выписках карт его нет
+      }
+
+      operation.key = 'bit:' + formatDate_(date) + ':' + operation.amount.toFixed(2) +
+        ':' + operation.merchant;
+    } else if (format.source === 'Банк') {
       var debit = parseStatementNumber_(cell(row, 'debit'));
       var credit = parseStatementNumber_(cell(row, 'credit'));
       var title = String(cell(row, 'operation') || '').trim();
@@ -548,6 +604,7 @@ function importStatementSheets_(sheets, fileName, fileKey) {
   }
 
   var stats = saveOperations_(operations, fileName, fileKey);
+  if (source === 'Bit') labelCardBitTransfers_();
   logEvent_('Выписка импортирована', {
     файл: fileName, источник: source, листов: sheets.length,
     строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
@@ -565,6 +622,7 @@ function importStatementRows_(rows, fileName, fileKey) {
   }
 
   var stats = saveOperations_(parsed.operations, fileName, fileKey);
+  if (parsed.source === 'Bit') labelCardBitTransfers_();
   logEvent_('Выписка импортирована', {
     файл: fileName, источник: parsed.source,
     строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
@@ -593,4 +651,54 @@ function importReportText_(fileName, result) {
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
   if (!s.added && !s.dupes) lines.push('Ничего подходящего не нашлось — проверьте, тот ли файл.');
   return lines.join('\n');
+}
+
+/**
+ * Подписывает карточные переводы Bit именами получателей.
+ *
+ * В выписке карты перевод выглядит безлико: «BIT», «PAYBOX», «העברה ב BIT» —
+ * и сумма. Кому и за что, знает только сам Bit. После импорта его выписки
+ * можно соединить одно с другим: дата и сумма совпадают, а получатель
+ * дописывается в заметку карточной строки.
+ */
+function labelCardBitTransfers_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+
+  var bitRows = rows.filter(function (row) {
+    return String(row[7]) === 'Bit' && String(row[13]).indexOf('картой') !== -1;
+  });
+  if (!bitRows.length) return 0;
+
+  var labelled = 0;
+
+  rows.forEach(function (row, position) {
+    if (String(row[7]) === 'Bit') return;
+    if (!/BIT|ביט|PAYBOX|פייבוקס/i.test(String(row[10]))) return;
+    if (String(row[18]).indexOf('Bit →') !== -1) return; // уже подписана
+
+    var amount = Number(row[2]) || 0;
+    var date = row[0];
+    if (!amount || !date) return;
+
+    for (var i = 0; i < bitRows.length; i++) {
+      var bit = bitRows[i];
+      if (Math.abs((Number(bit[2]) || 0) - amount) > 0.011) continue;
+
+      var days = Math.abs(bit[0] - date) / (24 * 60 * 60 * 1000);
+      if (days > 3) continue;
+
+      var note = 'Bit → ' + String(bit[10] || 'получатель не указан');
+      var existing = String(row[18] || '');
+      sheet.getRange(position + 2, 19).setValue(existing ? existing + ' · ' + note : note);
+      labelled++;
+      break;
+    }
+  });
+
+  if (labelled) logEvent_('Переводы Bit подписаны получателями', { строк: labelled });
+  return labelled;
 }

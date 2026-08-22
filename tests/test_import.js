@@ -97,6 +97,52 @@ check('обычная покупка отмечена покупкой', maxPars
 check('дата списания прочитана', call('formatDate_', maxParsed.operations[1].chargeDate) === '15.06.2026',
   call('formatDate_', maxParsed.operations[1].chargeDate));
 
+console.log('\n=== Выписка Bit ===');
+
+// Bit — не отдельный кошелёк, а способ заплатить. Платёж «с кредитной карты»
+// придёт ещё и из выписки карты, поэтому тратой считается только то, что
+// ушло с баланса Bit. Зато Bit знает получателя, которого в выписке карты нет
+const bit = [
+  ['', 'סטטוס', 'תאור', 'סכום עמלה', 'סכום', 'אמצעי תשלום', 'זיכוי/חיוב', 'מאת/ל', 'תאריך'],
+  ['', 'בוצע', 'מאיה ינואר', '', '300', 'כרטיס אשראי', 'חיוב', 'Балет Израиль', '07.01.26'],
+  ['', 'בוצע', 'Ли', '', '100', 'יתרה', 'חיוב', 'Майя Муллер', '07.01.26'],
+  ['', 'בוצע', 'החזר', '', '250', 'יתרה', 'זיכוי', 'Аня', '08.01.26'],
+  ['', 'בוטל', 'отменённый', '', '900', 'יתרה', 'חיוב', 'Кто-то', '09.01.26']
+];
+
+const bitParsed = call('parseStatement_', bit, 'bit_transactions_2026.csv', '');
+check('выписка Bit узнана', bitParsed.ok && bitParsed.source === 'Bit',
+  bitParsed.error || bitParsed.source);
+check('отменённый перевод пропущен', bitParsed.operations.length === 3,
+  String(bitParsed.operations.length));
+// Графа «סכום עמלה» (комиссия) стоит перед «סכום» (сумма): поиск по вхождению
+// брал бы комиссию, то есть ноль
+check('сумма взята из своей графы', bitParsed.operations[0].amount === 300,
+  String(bitParsed.operations[0].amount));
+check('платёж картой не считается тратой', bitParsed.operations[0].notTrackable === 'да',
+  bitParsed.operations[0].kind + '/' + bitParsed.operations[0].notTrackable);
+check('платёж с баланса — трата', bitParsed.operations[1].notTrackable === '' &&
+  bitParsed.operations[1].kind === 'перевод Bit',
+  bitParsed.operations[1].kind + '/' + bitParsed.operations[1].notTrackable);
+check('зачисление отмечено поступлением', bitParsed.operations[2].kind === 'поступление',
+  bitParsed.operations[2].kind);
+check('получатель на месте', bitParsed.operations[0].merchant === 'Балет Израиль',
+  bitParsed.operations[0].merchant);
+
+// Карточная строка «BIT» без имени получателя — Bit её подписывает
+call('importStatementRows_', [
+  ['תאריך עסקה', 'שם בית העסק', 'סכום חיוב', 'סוג עסקה', 'הערות'],
+  ['07-01-2026', 'BIT', '300', 'רגילה', '']
+], 'cal-bit.xlsx', 'ключ-cal-bit');
+call('importStatementRows_', bit, 'bit.csv', 'ключ-bit');
+
+const opsSheet = call('ensureSheet_', 'Операции', []);
+const opsRows = opsSheet.getRange(2, 1, opsSheet.getLastRow() - 1, 20).getValues();
+const cardBit = opsRows.filter(r => String(r[10]) === 'BIT')[0];
+check('карточный перевод подписан получателем',
+  cardBit && /Bit → Балет Израиль/.test(String(cardBit[18])),
+  cardBit ? String(cardBit[18]) : 'строка не найдена');
+
 console.log('\n=== Пустые ячейки не сдвигают колонки ===');
 
 // Выгрузка Cal по всем картам пишет пустую ячейку самозакрывающимся тегом:
