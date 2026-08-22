@@ -484,6 +484,37 @@ check('после ответа повторно не спрашивают',
   call('pendingIncomeOperations_').length === pendingBefore,
   pendingBefore + ' vs ' + call('pendingIncomeOperations_').length);
 
+console.log('\n=== Справочник дополняется, а не переписывается ===');
+
+// Список категорий длинный, и пересылать его целиком ради одной новой строки
+// неудобно. «/spravochnik расходы добавить» дописывает строки, а строку с тем
+// же названием заменяет
+const catSheet = call('ensureSheet_', 'Категории', ['Категория', 'Подкатегория', 'Ключевые слова']);
+const catsBefore = catSheet.getLastRow();
+
+call('handleDirectoryUpload_', { chat: { id: 1 }, from: { id: 1 } }, [
+  '/spravochnik расходы добавить',
+  'Уход за собой | Барбершоп | барбершоп, борода',
+  'Прочее | Услуги | химчистк, прачечн, ремонт обуви'
+].join('\n'));
+
+check('новая строка дописана', catSheet.getLastRow() === catsBefore + 1,
+  catsBefore + ' → ' + catSheet.getLastRow());
+check('«волосы» уходят в новую категорию',
+  call('categorize_', 'волосы Маша', '').category === 'Уход за собой',
+  call('categorize_', 'волосы Маша', '').category);
+// «барбершоп» есть и в стартовой строке про парикмахера, поэтому проверяем
+// по слову, которое встречается только в дописанной
+check('дописанная строка работает',
+  call('categorize_', 'борода', '').subcategory === 'Барбершоп',
+  call('categorize_', 'борода', '').subcategory);
+check('существующая строка заменена, а не задвоена',
+  call('categorize_', 'парикмахер', '').category === 'Уход за собой',
+  call('categorize_', 'парикмахер', '').category);
+check('химчистка осталась услугами',
+  call('categorize_', 'химчистка', '').subcategory === 'Услуги',
+  call('categorize_', 'химчистка', '').category + '/' + call('categorize_', 'химчистка', '').subcategory);
+
 console.log('\n=== Обменные операции ===');
 
 // Деньги, пришедшие в Израиле взамен рублей, переведённых в России. В

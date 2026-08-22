@@ -59,7 +59,8 @@ function parseDirectoryRows_(text, columns) {
 function handleDirectoryUpload_(message, text) {
   var chatId = message.chat.id;
   var firstLine = String(text || '').split('\n')[0] || '';
-  var word = firstLine.replace(/^\/\S+\s*/, '').trim();
+  var word = firstLine.replace(/^\/\S+\s*/, '')
+    .replace(/\s(добавить|дополнить)\s*$/i, '').trim();
   var spec = directorySpec_(word);
 
   if (!spec) {
@@ -71,6 +72,9 @@ function handleDirectoryUpload_(message, text) {
     return;
   }
 
+  // «добавить» дописывает строки к справочнику вместо замены целиком: список
+  // категорий длинный, и пересылать его ради одной новой строки неудобно
+  var appendMode = /\s(добавить|дополнить)\s*$/i.test(firstLine);
   var rows = parseDirectoryRows_(text, spec.columns);
   if (!rows.length) {
     tgSend_(chatId, 'В сообщении нет строк справочника. Каждая запись — своей строкой, ' +
@@ -80,8 +84,31 @@ function handleDirectoryUpload_(message, text) {
 
   var sheet = ensureSheet_(spec.sheetName, spec.columns);
   var last = sheet.getLastRow();
-  if (last > 1) sheet.getRange(2, 1, last - 1, spec.columns.length).clearContent();
-  sheet.getRange(2, 1, rows.length, spec.columns.length).setValues(rows);
+
+  if (!appendMode) {
+    if (last > 1) sheet.getRange(2, 1, last - 1, spec.columns.length).clearContent();
+    sheet.getRange(2, 1, rows.length, spec.columns.length).setValues(rows);
+  } else {
+    var existing = last > 1
+      ? sheet.getRange(2, 1, last - 1, spec.columns.length).getValues()
+      : [];
+
+    rows.forEach(function (row) {
+      // Строка с тем же названием заменяется, новая — дописывается: так одной
+      // командой можно и завести категорию, и поправить соседнюю
+      var found = -1;
+      for (var i = 0; i < existing.length; i++) {
+        if (String(existing[i][0]).trim() === row[0] &&
+            String(existing[i][1]).trim() === row[1]) { found = i; break; }
+      }
+      if (found === -1) {
+        sheet.appendRow(row);
+        existing.push(row);
+      } else {
+        sheet.getRange(found + 2, 1, 1, spec.columns.length).setValues([row]);
+      }
+    });
+  }
 
   // Справочники категорий кэшируются: без сброса бот продолжил бы раскладывать
   // траты по старому списку до перезапуска
@@ -89,7 +116,9 @@ function handleDirectoryUpload_(message, text) {
   INCOME_CATEGORIES_CACHE_ = null;
 
   logEvent_('Справочник обновлён из чата', { лист: spec.name, записей: rows.length });
-  tgSend_(chatId, 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');
+  tgSend_(chatId, appendMode
+    ? 'Справочник «' + spec.name + '» дополнен: строк — <b>' + rows.length + '</b>.'
+    : 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');
 }
 
 /**
