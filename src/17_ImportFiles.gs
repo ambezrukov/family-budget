@@ -145,22 +145,25 @@ function rowsFromExcel_(blob, fileName) {
 /**
  * Разбирает файл любого из поддерживаемых видов.
  */
-function rowsFromStatementBlob_(blob, fileName) {
+function sheetsFromStatementBlob_(blob, fileName) {
   var name = String(fileName || '').toLowerCase();
   var type = String(blob.getContentType() || '').toLowerCase();
 
-  if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) return rowsFromCsv_(blob);
+  if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) {
+    return [{ name: '', rows: rowsFromCsv_(blob) }];
+  }
 
   if (/\.xlsx?$/.test(name) || type.indexOf('spreadsheet') !== -1 || type.indexOf('excel') !== -1) {
     // Свой разбор архива — основной путь: он не зависит ни от прав на Диск,
     // ни от того, включён ли Drive API в проекте скрипта
     try {
-      var rows = xlsxRows_(blob);
-      if (rows && rows.length) return rows;
+      var sheets = xlsxSheets_(blob);
+      if (sheets && sheets.length) return sheets;
     } catch (err) {
       logEvent_('Не разобрал Excel своими силами', { файл: fileName, ошибка: String(err) });
     }
-    return rowsFromExcel_(blob, fileName); // запасной путь через Диск
+    var rows = rowsFromExcel_(blob, fileName); // запасной путь через Диск
+    return rows && rows.length ? [{ name: '', rows: rows }] : null;
   }
   return null;
 }
@@ -194,22 +197,22 @@ function handleStatementDocument_(message, document) {
     return;
   }
 
-  var rows;
+  var sheets;
   try {
-    rows = rowsFromStatementBlob_(file.blob.setName(fileName), fileName);
+    sheets = sheetsFromStatementBlob_(file.blob.setName(fileName), fileName);
   } catch (err) {
     logEvent_('Сбой чтения выписки', { файл: fileName, ошибка: String(err) });
-    rows = null;
+    sheets = null;
   }
 
-  if (!rows || !rows.length) {
+  if (!sheets || !sheets.length) {
     tgSend_(chatId, 'Не смог прочитать файл: не нашёл в нём таблицы с данными. ' +
       'Проверьте, что это выгрузка операций, а не сводка или PDF, — ' +
       'или пришлите её в CSV.');
     return;
   }
 
-  var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
+  var result = importStatementSheets_(sheets, fileName, 'tg:' + document.file_id);
   tgSend_(chatId, importReportText_(fileName, result));
   // Спрашиваем и когда новых строк не прибавилось: неотвеченные вопросы могли
   // остаться с прошлого раза — например, если строки импортировались версией
@@ -297,20 +300,20 @@ function importFromFolder_(chatId) {
   var added = 0;
   fresh.forEach(function (item) {
     var name = item.file.getName();
-    var rows;
+    var sheets;
     try {
-      rows = rowsFromStatementBlob_(item.file.getBlob(), name);
+      sheets = sheetsFromStatementBlob_(item.file.getBlob(), name);
     } catch (err) {
       logEvent_('Сбой чтения выписки с Диска', { файл: name, ошибка: String(err) });
-      rows = null;
+      sheets = null;
     }
 
-    if (!rows || !rows.length) {
+    if (!sheets || !sheets.length) {
       tgSend_(chatId, '<b>' + escapeHtml_(name) + '</b>\nНе смог прочитать файл.');
       return;
     }
 
-    var result = importStatementRows_(rows, name, item.key);
+    var result = importStatementSheets_(sheets, name, item.key);
     if (result.ok) added += result.stats.added;
     tgSend_(chatId, importReportText_(name, result));
   });

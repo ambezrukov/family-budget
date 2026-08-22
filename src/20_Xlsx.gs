@@ -17,23 +17,42 @@
  */
 function xlsxParts_(blob) {
   var files = Utilities.unzip(blob.setContentType('application/zip'));
-  var parts = { sheet: '', shared: '', sheetName: '' };
+  var parts = { sheets: [], shared: '', names: [] };
 
   files.forEach(function (file) {
     var name = String(file.getName() || '');
     if (name.indexOf('xl/sharedStrings.xml') !== -1) {
       parts.shared = file.getDataAsString('UTF-8');
     } else if (/xl\/worksheets\/sheet\d+\.xml$/.test(name)) {
-      // Берём первый лист по порядку: у всех наших выгрузок он единственный
-      // либо главный, а остальные — пустые «גיליון2», «גיליון3»
-      if (!parts.sheet || name < parts.sheetName) {
-        parts.sheet = file.getDataAsString('UTF-8');
-        parts.sheetName = name;
-      }
+      parts.sheets.push({ file: name, xml: file.getDataAsString('UTF-8') });
+    } else if (name.indexOf('xl/workbook.xml') !== -1) {
+      // Настоящие названия листов лежат в workbook.xml: «עסקאות לידיעה»
+      // против безликого sheet3.xml
+      parts.names = (file.getDataAsString('UTF-8').match(/<sheet[^>]*name="[^"]*"/g) || [])
+        .map(function (tag) { return xmlUnescape_((tag.match(/name="([^"]*)"/) || [])[1] || ''); });
     }
   });
 
+  parts.sheets.sort(function (a, b) { return a.file < b.file ? -1 : 1; });
+  parts.sheets.forEach(function (sheet, index) {
+    sheet.name = parts.names[index] || ('Лист ' + (index + 1));
+  });
+
   return parts;
+}
+
+/**
+ * Все листы книги: [{name, rows}].
+ *
+ * Читать только первый нельзя: Max раскладывает операции по трём листам —
+ * «к дате списания», «одобрены, но ещё не проведены» и «к сведению». Покупки
+ * последних дней лежат на втором, и без него выписка выглядит пустой.
+ */
+function xlsxSheets_(blob) {
+  var parts = xlsxParts_(blob);
+  return parts.sheets.map(function (sheet) {
+    return { name: sheet.name, rows: xlsxRowsFromParts_(sheet.xml, parts.shared) };
+  }).filter(function (sheet) { return sheet.rows.length; });
 }
 
 /**
@@ -130,8 +149,8 @@ function xlsxRowsFromParts_(sheetXml, sharedXml) {
  * Полный путь: файл Excel → строки.
  */
 function xlsxRows_(blob) {
-  var parts = xlsxParts_(blob);
-  return xlsxRowsFromParts_(parts.sheet, parts.shared);
+  var sheets = xlsxSheets_(blob);
+  return sheets.length ? sheets[0].rows : [];
 }
 
 /**

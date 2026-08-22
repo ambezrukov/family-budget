@@ -97,6 +97,51 @@ check('обычная покупка отмечена покупкой', maxPars
 check('дата списания прочитана', call('formatDate_', maxParsed.operations[1].chargeDate) === '15.06.2026',
   call('formatDate_', maxParsed.operations[1].chargeDate));
 
+console.log('\n=== Max: три листа в одном файле ===');
+
+// Max раскладывает операции по трём листам. Покупки последних дней лежат на
+// втором — «одобрены, но ещё не проведены», и без него выписка выглядит так,
+// будто по карте ничего не тратили, кроме автокредита
+const maxHeader = ['תאריך עסקה', 'שם בית העסק', 'קטגוריה', '4 ספרות אחרונות של כרטיס',
+  'סוג עסקה', 'סכום חיוב', 'מטבע חיוב', 'סכום עסקה מקורי', 'מטבע עסקה מקורי',
+  'תאריך חיוב', 'הערות', 'תיוגים'];
+
+const maxSheets = [
+  { name: 'עסקאות במועד החיוב', rows: [
+    ['6528-max', '', ''], ['09/2026', '', ''], maxHeader,
+    ['04-03-2024', 'קיה', 'מוצרי אשראי', '6528', 'תשלום חודשי', '1526.75', '₪', '78242', '₪',
+     '15-09-2026', 'תשלום 30 מתוך 60', '']
+  ] },
+  { name: 'עסקאות שאושרו וטרם נקלטו', rows: [
+    ['6528-max', '', ''], ['09/2026', '', ''], maxHeader,
+    // Сумма списания пуста: деньги потрачены, но к оплате ещё не выставлены
+    ['21-08-2026', 'צמיגי יוניברס', 'תחבורה', '6528', 'רגילה', '', '', '800', '₪', '', '', '']
+  ] },
+  { name: 'עסקאות לידיעה', rows: [
+    ['6528-max', '', ''], ['09/2026', '', ''], maxHeader,
+    ['04-03-2024', 'קיה', 'מוצרי אשראי', '6528', 'מימון לרכישה עתידית', '82134.3', '₪',
+     '81758', '₪', '', '', '']
+  ] }
+];
+
+const maxImport = call('importStatementSheets_', maxSheets, 'max.xlsx', 'ключ-max');
+check('прочитаны все три листа', maxImport.ok && maxImport.stats.added === 3,
+  JSON.stringify(maxImport.stats || maxImport.error));
+
+const maxParsedPending = call('parseStatement_', maxSheets[1].rows, 'max.xlsx', maxSheets[1].name);
+check('покупка без суммы списания не потеряна',
+  maxParsedPending.operations.length === 1 && maxParsedPending.operations[0].amount === 800,
+  JSON.stringify(maxParsedPending.operations.map(o => o.amount)));
+check('она помечена как ждущая списания',
+  maxParsedPending.operations[0].kind === 'ждёт списания',
+  maxParsedPending.operations[0].kind);
+
+const maxParsedInfo = call('parseStatement_', maxSheets[2].rows, 'max.xlsx', maxSheets[2].name);
+check('остаток кредита не считается тратой',
+  maxParsedInfo.operations[0].notTrackable === 'да' &&
+  maxParsedInfo.operations[0].kind === 'к сведению',
+  maxParsedInfo.operations[0].kind + '/' + maxParsedInfo.operations[0].notTrackable);
+
 console.log('\n=== Выписка Cal ===');
 
 // Cal устроен иначе всех: заголовки с переносом строки внутри ячейки, номер

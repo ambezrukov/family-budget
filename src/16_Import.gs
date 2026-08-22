@@ -271,7 +271,7 @@ function readCards_() {
  * Превращает строки файла в операции. Ничего не пишет — только разбирает,
  * чтобы разбор можно было проверить тестом без таблицы.
  */
-function parseStatement_(rows, fileName) {
+function parseStatement_(rows, fileName, sheetName) {
   var format = detectStatementFormat_(rows);
   if (!format) return { ok: false, error: 'Не понял, чья это выписка: не нашёл знакомых столбцов' };
 
@@ -298,6 +298,13 @@ function parseStatement_(rows, fileName) {
     var row = rows[r] || [];
     var date = parseStatementDate_(cell(row, 'date'));
     if (!date) continue; // итоговые строки и разделители дат не имеют
+
+    // Max делит операции по листам: «к дате списания», «одобрены, но ещё не
+    // проведены» (покупки последних дней) и «к сведению» (будущие платежи,
+    // которые ещё не случились)
+    var sheet = String(sheetName || '');
+    var pending = /טרם נקלטו|שאושרו/.test(sheet);
+    var informational = /לידיעה/.test(sheet);
 
     var operation = {
       date: date,
@@ -339,6 +346,9 @@ function parseStatement_(rows, fileName) {
       }
     } else {
       operation.amount = parseStatementNumber_(cell(row, 'amount'));
+      // У неproведённых операций графа «сумма списания» пуста: деньги
+      // потрачены, но карточная компания ещё не выставила их к оплате
+      if (!operation.amount) operation.amount = parseStatementNumber_(cell(row, 'originalAmount'));
       if (!operation.amount) continue;
 
       operation.currency = statementCurrency_(cell(row, 'currency'));
@@ -353,6 +363,14 @@ function parseStatement_(rows, fileName) {
       var kindText = String(cell(row, 'kind') || '');
       if (/תשלום|תשלומים|קרדיט|רכישה עתידית/.test(kindText)) operation.kind = 'рассрочка';
       if (/הוראת קבע/.test(kindText)) operation.kind = 'постоянное поручение';
+
+      if (pending) operation.kind = 'ждёт списания';
+      if (informational) {
+        // «К сведению» — это ещё не потраченные деньги: будущие платежи по
+        // рассрочке и остаток кредита. В расходы месяца им нельзя
+        operation.kind = 'к сведению';
+        operation.notTrackable = 'да';
+      }
 
       if (format.source === 'Isracard') {
         var voucher = String(cell(row, 'voucher') || '').replace(/\s/g, '');
@@ -372,7 +390,10 @@ function parseStatement_(rows, fileName) {
         // Без него четвёртый платёж посчитался бы повтором третьего
         operation.key = prefix + operation.card + ':' + formatDate_(date) + ':' +
           operation.merchant + ':' + operation.amount.toFixed(2) +
-          (operation.note ? ':' + operation.note : '');
+          (operation.note ? ':' + operation.note : '') +
+          // Строка «к сведению» — про другое событие, чем покупка с той же
+          // датой и суммой, и путать их ключом нельзя
+          (informational ? ':лидиеа' : '');
       }
     }
 
@@ -488,6 +509,38 @@ function statementPeriod_(operations) {
 /**
  * Разбирает готовые строки и сохраняет. Возвращает текст отчёта для чата.
  */
+function importStatementSheets_(sheets, fileName, fileKey) {
+  var operations = [];
+  var source = '';
+  var fileRows = 0;
+  var errors = [];
+
+  sheets.forEach(function (sheet) {
+    fileRows += sheet.rows.length;
+    var parsed = parseStatement_(sheet.rows, fileName, sheet.name);
+    if (!parsed.ok) {
+      errors.push(sheet.name + ': ' + parsed.error);
+      return;
+    }
+    source = source || parsed.source;
+    operations = operations.concat(parsed.operations);
+  });
+
+  if (!operations.length) {
+    var reason = errors.length ? errors[0] : 'Не нашёл в файле ни одной операции';
+    logEvent_('Выписка не разобрана', { файл: fileName, причина: reason, листов: sheets.length });
+    return { ok: false, error: reason };
+  }
+
+  var stats = saveOperations_(operations, fileName, fileKey);
+  logEvent_('Выписка импортирована', {
+    файл: fileName, источник: source, листов: sheets.length,
+    строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
+  });
+
+  return { ok: true, source: source, stats: stats, fileRows: fileRows };
+}
+
 function importStatementRows_(rows, fileName, fileKey) {
   var parsed = parseStatement_(rows, fileName);
   if (parsed.ok) parsed.fileRows = rows.length;

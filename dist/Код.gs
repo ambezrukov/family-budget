@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.11.1';
+var BOT_VERSION = '1.12.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -7713,8 +7713,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "В справочнике доходов появилась статья «Обменные операции»: деньги, пришедшие в Израиле взамен рублей, переведённых в России. В назначении платежа такой перевод выглядит как «возврат долга», но для израильского учёта это приход, и мешать его с зарплатой не стоит",
-  "Новые настройки и категории дописываются в таблицу сами при обновлении бота — раньше их видел только тот, кто заводил таблицу с нуля"
+  "Бот читает все листы файла, а не только первый. Max раскладывает операции по трём: «к дате списания», «одобрены, но ещё не проведены» и «к сведению». Покупки последних дней лежат на втором — из-за этого выписка выглядела так, будто по карте не тратили ничего, кроме автокредита",
+  "У неproведённых покупок графа «сумма списания» пуста: берём сумму самой покупки и помечаем строку «ждёт списания»",
+  "Будущие платежи с листа «к сведению» — остаток автокредита и подобное — помечаются «не трата»: эти деньги ещё не потрачены"
 ];
 
 
@@ -7995,7 +7996,7 @@ function readCards_() {
  * Превращает строки файла в операции. Ничего не пишет — только разбирает,
  * чтобы разбор можно было проверить тестом без таблицы.
  */
-function parseStatement_(rows, fileName) {
+function parseStatement_(rows, fileName, sheetName) {
   var format = detectStatementFormat_(rows);
   if (!format) return { ok: false, error: 'Не понял, чья это выписка: не нашёл знакомых столбцов' };
 
@@ -8022,6 +8023,13 @@ function parseStatement_(rows, fileName) {
     var row = rows[r] || [];
     var date = parseStatementDate_(cell(row, 'date'));
     if (!date) continue; // итоговые строки и разделители дат не имеют
+
+    // Max делит операции по листам: «к дате списания», «одобрены, но ещё не
+    // проведены» (покупки последних дней) и «к сведению» (будущие платежи,
+    // которые ещё не случились)
+    var sheet = String(sheetName || '');
+    var pending = /טרם נקלטו|שאושרו/.test(sheet);
+    var informational = /לידיעה/.test(sheet);
 
     var operation = {
       date: date,
@@ -8063,6 +8071,9 @@ function parseStatement_(rows, fileName) {
       }
     } else {
       operation.amount = parseStatementNumber_(cell(row, 'amount'));
+      // У неproведённых операций графа «сумма списания» пуста: деньги
+      // потрачены, но карточная компания ещё не выставила их к оплате
+      if (!operation.amount) operation.amount = parseStatementNumber_(cell(row, 'originalAmount'));
       if (!operation.amount) continue;
 
       operation.currency = statementCurrency_(cell(row, 'currency'));
@@ -8077,6 +8088,14 @@ function parseStatement_(rows, fileName) {
       var kindText = String(cell(row, 'kind') || '');
       if (/תשלום|תשלומים|קרדיט|רכישה עתידית/.test(kindText)) operation.kind = 'рассрочка';
       if (/הוראת קבע/.test(kindText)) operation.kind = 'постоянное поручение';
+
+      if (pending) operation.kind = 'ждёт списания';
+      if (informational) {
+        // «К сведению» — это ещё не потраченные деньги: будущие платежи по
+        // рассрочке и остаток кредита. В расходы месяца им нельзя
+        operation.kind = 'к сведению';
+        operation.notTrackable = 'да';
+      }
 
       if (format.source === 'Isracard') {
         var voucher = String(cell(row, 'voucher') || '').replace(/\s/g, '');
@@ -8096,7 +8115,10 @@ function parseStatement_(rows, fileName) {
         // Без него четвёртый платёж посчитался бы повтором третьего
         operation.key = prefix + operation.card + ':' + formatDate_(date) + ':' +
           operation.merchant + ':' + operation.amount.toFixed(2) +
-          (operation.note ? ':' + operation.note : '');
+          (operation.note ? ':' + operation.note : '') +
+          // Строка «к сведению» — про другое событие, чем покупка с той же
+          // датой и суммой, и путать их ключом нельзя
+          (informational ? ':лидиеа' : '');
       }
     }
 
@@ -8212,6 +8234,38 @@ function statementPeriod_(operations) {
 /**
  * Разбирает готовые строки и сохраняет. Возвращает текст отчёта для чата.
  */
+function importStatementSheets_(sheets, fileName, fileKey) {
+  var operations = [];
+  var source = '';
+  var fileRows = 0;
+  var errors = [];
+
+  sheets.forEach(function (sheet) {
+    fileRows += sheet.rows.length;
+    var parsed = parseStatement_(sheet.rows, fileName, sheet.name);
+    if (!parsed.ok) {
+      errors.push(sheet.name + ': ' + parsed.error);
+      return;
+    }
+    source = source || parsed.source;
+    operations = operations.concat(parsed.operations);
+  });
+
+  if (!operations.length) {
+    var reason = errors.length ? errors[0] : 'Не нашёл в файле ни одной операции';
+    logEvent_('Выписка не разобрана', { файл: fileName, причина: reason, листов: sheets.length });
+    return { ok: false, error: reason };
+  }
+
+  var stats = saveOperations_(operations, fileName, fileKey);
+  logEvent_('Выписка импортирована', {
+    файл: fileName, источник: source, листов: sheets.length,
+    строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
+  });
+
+  return { ok: true, source: source, stats: stats, fileRows: fileRows };
+}
+
 function importStatementRows_(rows, fileName, fileKey) {
   var parsed = parseStatement_(rows, fileName);
   if (parsed.ok) parsed.fileRows = rows.length;
@@ -8403,22 +8457,25 @@ function rowsFromExcel_(blob, fileName) {
 /**
  * Разбирает файл любого из поддерживаемых видов.
  */
-function rowsFromStatementBlob_(blob, fileName) {
+function sheetsFromStatementBlob_(blob, fileName) {
   var name = String(fileName || '').toLowerCase();
   var type = String(blob.getContentType() || '').toLowerCase();
 
-  if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) return rowsFromCsv_(blob);
+  if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) {
+    return [{ name: '', rows: rowsFromCsv_(blob) }];
+  }
 
   if (/\.xlsx?$/.test(name) || type.indexOf('spreadsheet') !== -1 || type.indexOf('excel') !== -1) {
     // Свой разбор архива — основной путь: он не зависит ни от прав на Диск,
     // ни от того, включён ли Drive API в проекте скрипта
     try {
-      var rows = xlsxRows_(blob);
-      if (rows && rows.length) return rows;
+      var sheets = xlsxSheets_(blob);
+      if (sheets && sheets.length) return sheets;
     } catch (err) {
       logEvent_('Не разобрал Excel своими силами', { файл: fileName, ошибка: String(err) });
     }
-    return rowsFromExcel_(blob, fileName); // запасной путь через Диск
+    var rows = rowsFromExcel_(blob, fileName); // запасной путь через Диск
+    return rows && rows.length ? [{ name: '', rows: rows }] : null;
   }
   return null;
 }
@@ -8452,22 +8509,22 @@ function handleStatementDocument_(message, document) {
     return;
   }
 
-  var rows;
+  var sheets;
   try {
-    rows = rowsFromStatementBlob_(file.blob.setName(fileName), fileName);
+    sheets = sheetsFromStatementBlob_(file.blob.setName(fileName), fileName);
   } catch (err) {
     logEvent_('Сбой чтения выписки', { файл: fileName, ошибка: String(err) });
-    rows = null;
+    sheets = null;
   }
 
-  if (!rows || !rows.length) {
+  if (!sheets || !sheets.length) {
     tgSend_(chatId, 'Не смог прочитать файл: не нашёл в нём таблицы с данными. ' +
       'Проверьте, что это выгрузка операций, а не сводка или PDF, — ' +
       'или пришлите её в CSV.');
     return;
   }
 
-  var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
+  var result = importStatementSheets_(sheets, fileName, 'tg:' + document.file_id);
   tgSend_(chatId, importReportText_(fileName, result));
   // Спрашиваем и когда новых строк не прибавилось: неотвеченные вопросы могли
   // остаться с прошлого раза — например, если строки импортировались версией
@@ -8555,20 +8612,20 @@ function importFromFolder_(chatId) {
   var added = 0;
   fresh.forEach(function (item) {
     var name = item.file.getName();
-    var rows;
+    var sheets;
     try {
-      rows = rowsFromStatementBlob_(item.file.getBlob(), name);
+      sheets = sheetsFromStatementBlob_(item.file.getBlob(), name);
     } catch (err) {
       logEvent_('Сбой чтения выписки с Диска', { файл: name, ошибка: String(err) });
-      rows = null;
+      sheets = null;
     }
 
-    if (!rows || !rows.length) {
+    if (!sheets || !sheets.length) {
       tgSend_(chatId, '<b>' + escapeHtml_(name) + '</b>\nНе смог прочитать файл.');
       return;
     }
 
-    var result = importStatementRows_(rows, name, item.key);
+    var result = importStatementSheets_(sheets, name, item.key);
     if (result.ok) added += result.stats.added;
     tgSend_(chatId, importReportText_(name, result));
   });
@@ -9020,23 +9077,42 @@ function handleModelCommand_(message, text) {
  */
 function xlsxParts_(blob) {
   var files = Utilities.unzip(blob.setContentType('application/zip'));
-  var parts = { sheet: '', shared: '', sheetName: '' };
+  var parts = { sheets: [], shared: '', names: [] };
 
   files.forEach(function (file) {
     var name = String(file.getName() || '');
     if (name.indexOf('xl/sharedStrings.xml') !== -1) {
       parts.shared = file.getDataAsString('UTF-8');
     } else if (/xl\/worksheets\/sheet\d+\.xml$/.test(name)) {
-      // Берём первый лист по порядку: у всех наших выгрузок он единственный
-      // либо главный, а остальные — пустые «גיליון2», «גיליון3»
-      if (!parts.sheet || name < parts.sheetName) {
-        parts.sheet = file.getDataAsString('UTF-8');
-        parts.sheetName = name;
-      }
+      parts.sheets.push({ file: name, xml: file.getDataAsString('UTF-8') });
+    } else if (name.indexOf('xl/workbook.xml') !== -1) {
+      // Настоящие названия листов лежат в workbook.xml: «עסקאות לידיעה»
+      // против безликого sheet3.xml
+      parts.names = (file.getDataAsString('UTF-8').match(/<sheet[^>]*name="[^"]*"/g) || [])
+        .map(function (tag) { return xmlUnescape_((tag.match(/name="([^"]*)"/) || [])[1] || ''); });
     }
   });
 
+  parts.sheets.sort(function (a, b) { return a.file < b.file ? -1 : 1; });
+  parts.sheets.forEach(function (sheet, index) {
+    sheet.name = parts.names[index] || ('Лист ' + (index + 1));
+  });
+
   return parts;
+}
+
+/**
+ * Все листы книги: [{name, rows}].
+ *
+ * Читать только первый нельзя: Max раскладывает операции по трём листам —
+ * «к дате списания», «одобрены, но ещё не проведены» и «к сведению». Покупки
+ * последних дней лежат на втором, и без него выписка выглядит пустой.
+ */
+function xlsxSheets_(blob) {
+  var parts = xlsxParts_(blob);
+  return parts.sheets.map(function (sheet) {
+    return { name: sheet.name, rows: xlsxRowsFromParts_(sheet.xml, parts.shared) };
+  }).filter(function (sheet) { return sheet.rows.length; });
 }
 
 /**
@@ -9133,8 +9209,8 @@ function xlsxRowsFromParts_(sheetXml, sharedXml) {
  * Полный путь: файл Excel → строки.
  */
 function xlsxRows_(blob) {
-  var parts = xlsxParts_(blob);
-  return xlsxRowsFromParts_(parts.sheet, parts.shared);
+  var sheets = xlsxSheets_(blob);
+  return sheets.length ? sheets[0].rows : [];
 }
 
 /**
