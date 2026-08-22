@@ -545,6 +545,24 @@ check('чек дочитан моделью из каталога', rowsCount() 
   'добавлено: ' + (rowsCount() - beforeOlder));
 check('до каталога дошли', modelsTried.some(u => /2\.5-pro/.test(u)));
 
+// Кончилась дневная квота — ждать бессмысленно, счётчик обнулится только
+// в полночь. Бот должен сразу идти к другой модели, а не тратить попытки.
+const quotaCalls = [];
+gemini({ receipt: (payload, url) => {
+  quotaCalls.push(String(url));
+  return /flash-lite/.test(String(url))
+    ? { receipts: [{ total: 33, currency: 'ILS', datetime: '', store: 'После квоты',
+        category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: '' }] }
+    : 'QUOTA';
+} });
+const beforeQuota = rowsCount();
+post({ message: msg({ document: { file_id: 'doc6', mime_type: 'application/pdf' } }) });
+check('чек записан несмотря на исчерпанную квоту', rowsCount() === beforeQuota + 1,
+  'добавлено: ' + (rowsCount() - beforeQuota));
+check('исчерпанную модель не долбили повторами',
+  quotaCalls.filter(u => !/flash-lite/.test(u)).length === 1,
+  'попыток: ' + quotaCalls.filter(u => !/flash-lite/.test(u)).length);
+
 const beforeZip = rowsCount();
 post({ message: msg({ document: { file_id: 'doc3', mime_type: 'application/zip' } }) });
 check('неподходящий файл не записан', rowsCount() === beforeZip);

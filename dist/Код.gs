@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.8.2';
+var BOT_VERSION = '1.9.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1316,6 +1316,9 @@ var GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/'
 // ответа человеку: в первом случае помогает просто повторить через минуту.
 var GEMINI_BUSY_ = false;
 
+// Дневная квота модели кончилась — до полуночи она отвечать не будет
+var GEMINI_QUOTA_OUT_ = false;
+
 // Сколько всего времени отводим на один разбор со всеми повторами и сменой
 // моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
 // запись расхода с ответом — поэтому берём меньше половины.
@@ -1452,12 +1455,23 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
 
       if (code === 200) {
         GEMINI_BUSY_ = false;
+        GEMINI_QUOTA_OUT_ = false;
         return JSON.parse(text);
       }
 
       if (code === 429 || code >= 500) {
         busy = true;
         logEvent_('Gemini временная ошибка', { code: code, attempt: attempt + 1, body: text.substring(0, 1000) });
+
+        // 429 бывает двух видов: «слишком часто» лечится паузой, а «кончилась
+        // дневная квота» — нет, её ждать до полуночи. Во втором случае
+        // повторы только тратят время: сразу уходим к другой модели, у неё
+        // счётчик свой
+        if (code === 429 && /quota|per day|daily/i.test(text)) {
+          logEvent_('Дневная квота модели исчерпана', { модель: url.split('/models/')[1] });
+          GEMINI_QUOTA_OUT_ = true;
+          break;
+        }
         continue; // имеет смысл повторить
       }
 
@@ -2675,6 +2689,7 @@ function helpText_() {
     '/otchet — отчёт за прошлый месяц',
     '/import — разобрать выписки из папки «Выписки» на Диске',
     '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
+    '/model — какая модель распознаёт чеки и как её сменить',
     '/spravka — эта справка',
     '/imya — как подписывать меня в таблице («/imya Толя»);',
     '   имя жены или мужа — «/imya 673335047 = Маша»',
@@ -3143,6 +3158,10 @@ function handleCommand_(message, text) {
       return;
     case '/uchet':
       handleAccountingStart_(message, text);
+      return;
+    case '/model':
+    case '/modeli':
+      handleModelCommand_(message, text);
       return;
     case '/versiya':
     case '/version':
@@ -3893,11 +3912,15 @@ function handleReceipt_(message, fileId, sourceType) {
   var answer = geminiParseReceipt_(file.base64, file.mimeType, caption);
   if (!answer) {
     logEvent_('Чек не разобран', { fileId: fileId, перегрузка: GEMINI_BUSY_ });
-    tgSend_(chatId, GEMINI_BUSY_
-      ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
-        'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
-        'или напишите сумму текстом.'
-      : 'Не смог прочитать чек. Напишите сумму текстом — запишу.');
+    tgSend_(chatId, GEMINI_QUOTA_OUT_
+      ? 'На сегодня бесплатный лимит распознавания у Google исчерпан — ' +
+        'счётчик обнулится ночью. Можно сменить модель: <code>/model авто</code> ' +
+        'подберёт ту, у которой лимит ещё свой. Или напишите сумму текстом.'
+      : (GEMINI_BUSY_
+        ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
+          'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
+          'или напишите сумму текстом.'
+        : 'Не смог прочитать чек. Напишите сумму текстом — запишу.'));
     return;
   }
 
@@ -7377,9 +7400,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Импорт выписок больше не спрашивает категорию у модели по каждой строке. На банковской выписке это давало полторы сотни запросов подряд, упиралось в дневной лимит Gemini и обрывало разбор молча, без единого сообщения",
-  "Категории при импорте берутся из словаря на листе «Категории»; строки, которых словарь не знает, остаются без категории — их разложим отдельно",
-  "Получив файл, бот сразу пишет «взял, читаю»: раньше во время разбора чат молчал, и было непонятно, дошёл ли файл вообще"
+  "Модель можно сменить из чата: /model покажет, кто сейчас распознаёт чеки, «/model медиа gemini-2.5-flash» переключит, «/model авто» подберёт рабочую пару, «/model список» покажет всё, что доступно ключу",
+  "Кончившуюся дневную квоту бот больше не пережидает повторами: у каждой модели свой счётчик, поэтому он сразу переходит к следующей",
+  "И говорит об этом прямо: «лимит на сегодня исчерпан, обнулится ночью» — вместо расплывчатого «перегружено, попробуйте позже»"
 ];
 
 
@@ -8394,6 +8417,65 @@ function handleAccountingStart_(message, text) {
   logEvent_('Задана дата начала учёта', { дата: formatDate_(date) });
   tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
     'импортироваться не будут.');
+}
+
+/**
+ * Команда /model: посмотреть и сменить модель Gemini прямо из чата.
+ *
+ * Зачем: лимиты бесплатного уровня Google считает по каждой модели отдельно.
+ * Когда дневная квота одной кончилась, соседняя ещё свободна — и переключение
+ * должно быть делом одной строчки, а не похода в редактор скрипта.
+ */
+function handleModelCommand_(message, text) {
+  var chatId = message.chat.id;
+  var argument = String(text || '').replace(/^\/\S+\s*/, '').trim();
+
+  if (!argument) {
+    tgSend_(chatId, [
+      'Сейчас работают:',
+      '• чеки и голос — <b>' + escapeHtml_(modelForMedia_()) + '</b>',
+      '• разбор текста — <b>' + escapeHtml_(modelForText_()) + '</b>',
+      '',
+      'Лимиты Google считает по каждой модели отдельно, так что при',
+      '«превышена квота» помогает переход на соседнюю:',
+      '<code>/model медиа gemini-2.5-flash</code>',
+      '<code>/model текст gemini-2.5-flash-lite</code>',
+      '',
+      '<code>/model список</code> — что доступно вашему ключу',
+      '<code>/model авто</code> — подобрать рабочие самостоятельно'
+    ].join('\n'));
+    return;
+  }
+
+  if (/^(список|list)$/i.test(argument)) {
+    tgSend_(chatId, escapeHtml_(listGeminiModels()));
+    return;
+  }
+
+  if (/^(авто|auto)$/i.test(argument)) {
+    tgSend_(chatId, 'Перебираю модели, это займёт с полминуты…');
+    tgSend_(chatId, escapeHtml_(autoSelectModels()));
+    return;
+  }
+
+  var parts = argument.split(/\s+/);
+  var role = parts[0].toLowerCase();
+  var model = parts.slice(1).join(' ').trim();
+
+  var setting = /^(медиа|media|чеки|голос)$/.test(role) ? 'Модель для медиа'
+    : (/^(текст|text)$/.test(role) ? 'Модель для текста' : '');
+
+  if (!setting || !model) {
+    tgSend_(chatId, 'Напишите, что меняем и на что: ' +
+      '<code>/model медиа gemini-2.5-flash</code>');
+    return;
+  }
+
+  updateSetting_(setting, model);
+  logEvent_('Модель сменена из чата', { настройка: setting, модель: model });
+  tgSend_(chatId, setting + ' теперь <b>' + escapeHtml_(model) + '</b>.\n' +
+    'Если модель окажется нерабочей, бот сам перейдёт к запасной, ' +
+    'а <code>/model авто</code> подберёт рабочую пару.');
 }
 
 

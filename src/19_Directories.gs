@@ -115,3 +115,62 @@ function handleAccountingStart_(message, text) {
   tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
     'импортироваться не будут.');
 }
+
+/**
+ * Команда /model: посмотреть и сменить модель Gemini прямо из чата.
+ *
+ * Зачем: лимиты бесплатного уровня Google считает по каждой модели отдельно.
+ * Когда дневная квота одной кончилась, соседняя ещё свободна — и переключение
+ * должно быть делом одной строчки, а не похода в редактор скрипта.
+ */
+function handleModelCommand_(message, text) {
+  var chatId = message.chat.id;
+  var argument = String(text || '').replace(/^\/\S+\s*/, '').trim();
+
+  if (!argument) {
+    tgSend_(chatId, [
+      'Сейчас работают:',
+      '• чеки и голос — <b>' + escapeHtml_(modelForMedia_()) + '</b>',
+      '• разбор текста — <b>' + escapeHtml_(modelForText_()) + '</b>',
+      '',
+      'Лимиты Google считает по каждой модели отдельно, так что при',
+      '«превышена квота» помогает переход на соседнюю:',
+      '<code>/model медиа gemini-2.5-flash</code>',
+      '<code>/model текст gemini-2.5-flash-lite</code>',
+      '',
+      '<code>/model список</code> — что доступно вашему ключу',
+      '<code>/model авто</code> — подобрать рабочие самостоятельно'
+    ].join('\n'));
+    return;
+  }
+
+  if (/^(список|list)$/i.test(argument)) {
+    tgSend_(chatId, escapeHtml_(listGeminiModels()));
+    return;
+  }
+
+  if (/^(авто|auto)$/i.test(argument)) {
+    tgSend_(chatId, 'Перебираю модели, это займёт с полминуты…');
+    tgSend_(chatId, escapeHtml_(autoSelectModels()));
+    return;
+  }
+
+  var parts = argument.split(/\s+/);
+  var role = parts[0].toLowerCase();
+  var model = parts.slice(1).join(' ').trim();
+
+  var setting = /^(медиа|media|чеки|голос)$/.test(role) ? 'Модель для медиа'
+    : (/^(текст|text)$/.test(role) ? 'Модель для текста' : '');
+
+  if (!setting || !model) {
+    tgSend_(chatId, 'Напишите, что меняем и на что: ' +
+      '<code>/model медиа gemini-2.5-flash</code>');
+    return;
+  }
+
+  updateSetting_(setting, model);
+  logEvent_('Модель сменена из чата', { настройка: setting, модель: model });
+  tgSend_(chatId, setting + ' теперь <b>' + escapeHtml_(model) + '</b>.\n' +
+    'Если модель окажется нерабочей, бот сам перейдёт к запасной, ' +
+    'а <code>/model авто</code> подберёт рабочую пару.');
+}

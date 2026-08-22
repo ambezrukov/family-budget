@@ -167,7 +167,13 @@ const env = {
         });
       } else if (url.indexOf('generativelanguage') !== -1) {
         const answer = geminiResponder(payload, url);
-        if (answer === null) { code = 500; body = '{"error":"mocked failure"}'; }
+        if (answer === 'QUOTA') {
+          // Так Google отвечает, когда кончилась дневная квота модели
+          code = 429;
+          body = '{"error":{"code":429,"message":"You exceeded your current quota. ' +
+            'Limit: generate_content_free_tier_requests, per day"}}';
+        }
+        else if (answer === null) { code = 500; body = '{"error":"mocked failure"}'; }
         else body = JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(answer) }] } }] });
       } else if (url.indexOf('api.telegram.org') !== -1) {
         body = JSON.stringify(telegramResponder(url, payload));

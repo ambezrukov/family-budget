@@ -167,6 +167,10 @@ function handleCommand_(message, text) {
     case '/uchet':
       handleAccountingStart_(message, text);
       return;
+    case '/model':
+    case '/modeli':
+      handleModelCommand_(message, text);
+      return;
     case '/versiya':
     case '/version':
       tgSend_(chatId, versionReport_());
@@ -916,11 +920,15 @@ function handleReceipt_(message, fileId, sourceType) {
   var answer = geminiParseReceipt_(file.base64, file.mimeType, caption);
   if (!answer) {
     logEvent_('Чек не разобран', { fileId: fileId, перегрузка: GEMINI_BUSY_ });
-    tgSend_(chatId, GEMINI_BUSY_
-      ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
-        'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
-        'или напишите сумму текстом.'
-      : 'Не смог прочитать чек. Напишите сумму текстом — запишу.');
+    tgSend_(chatId, GEMINI_QUOTA_OUT_
+      ? 'На сегодня бесплатный лимит распознавания у Google исчерпан — ' +
+        'счётчик обнулится ночью. Можно сменить модель: <code>/model авто</code> ' +
+        'подберёт ту, у которой лимит ещё свой. Или напишите сумму текстом.'
+      : (GEMINI_BUSY_
+        ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
+          'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
+          'или напишите сумму текстом.'
+        : 'Не смог прочитать чек. Напишите сумму текстом — запишу.'));
     return;
   }
 

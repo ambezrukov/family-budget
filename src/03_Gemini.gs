@@ -14,6 +14,9 @@ var GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/'
 // ответа человеку: в первом случае помогает просто повторить через минуту.
 var GEMINI_BUSY_ = false;
 
+// Дневная квота модели кончилась — до полуночи она отвечать не будет
+var GEMINI_QUOTA_OUT_ = false;
+
 // Сколько всего времени отводим на один разбор со всеми повторами и сменой
 // моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
 // запись расхода с ответом — поэтому берём меньше половины.
@@ -150,12 +153,23 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
 
       if (code === 200) {
         GEMINI_BUSY_ = false;
+        GEMINI_QUOTA_OUT_ = false;
         return JSON.parse(text);
       }
 
       if (code === 429 || code >= 500) {
         busy = true;
         logEvent_('Gemini временная ошибка', { code: code, attempt: attempt + 1, body: text.substring(0, 1000) });
+
+        // 429 бывает двух видов: «слишком часто» лечится паузой, а «кончилась
+        // дневная квота» — нет, её ждать до полуночи. Во втором случае
+        // повторы только тратят время: сразу уходим к другой модели, у неё
+        // счётчик свой
+        if (code === 429 && /quota|per day|daily/i.test(text)) {
+          logEvent_('Дневная квота модели исчерпана', { модель: url.split('/models/')[1] });
+          GEMINI_QUOTA_OUT_ = true;
+          break;
+        }
         continue; // имеет смысл повторить
       }
 
