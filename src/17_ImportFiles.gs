@@ -145,7 +145,8 @@ function statementsFolder_() {
   var folderName = String(setting_('Папка выписок', 'Выписки')).trim() || 'Выписки';
   var spreadsheetId = getSpreadsheet_().getId();
 
-  var meta = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId + '?fields=parents', {});
+  var meta = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId +
+    '?fields=parents&supportsAllDrives=true', {});
   if (meta.getResponseCode() !== 200) return { error: 'Нет доступа к Диску' };
 
   var parents = JSON.parse(meta.getContentText()).parents || [];
@@ -153,7 +154,8 @@ function statementsFolder_() {
 
   var query = "name='" + folderName.replace(/'/g, "\\'") + "' and '" + parents[0] +
     "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
-  var found = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) + '&fields=files(id,name)', {});
+  var found = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) +
+    '&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true', {});
   if (found.getResponseCode() !== 200) return { error: 'Не удалось найти папку' };
 
   var files = JSON.parse(found.getContentText()).files || [];
@@ -189,7 +191,8 @@ function importFromFolder_(chatId) {
 
   var query = "'" + folder.id + "' in parents and trashed=false";
   var response = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) +
-    '&fields=files(id,name,mimeType,modifiedTime,md5Checksum)&orderBy=name', {});
+    '&fields=files(id,name,mimeType,modifiedTime,md5Checksum)&orderBy=name' +
+    '&supportsAllDrives=true&includeItemsFromAllDrives=true', {});
   if (response.getResponseCode() !== 200) {
     tgSend_(chatId, 'Не смог заглянуть в папку «' + escapeHtml_(folder.name) + '».');
     return;
@@ -246,10 +249,42 @@ function importFromFolder_(chatId) {
  * окно «Разрешить», и дальше бот работает сам.
  */
 function authorizeDrive() {
-  var folder = statementsFolder_();
-  var message = folder.error
-    ? 'Доступ к Диску есть, но папку не нашёл: ' + folder.error
-    : 'Доступ к Диску есть, папка найдена: ' + folder.name;
+  var lines = [];
+
+  // Права смотрим у самого Google: манифест может обещать что угодно, а
+  // значение имеет только то, что человек действительно разрешил в окне согласия
+  var scopes = '';
+  try {
+    var info = UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?access_token=' +
+      encodeURIComponent(ScriptApp.getOAuthToken()),
+      { muteHttpExceptions: true }
+    );
+    scopes = info.getResponseCode() === 200
+      ? String(JSON.parse(info.getContentText()).scope || '')
+      : 'не удалось спросить (' + info.getResponseCode() + ')';
+  } catch (err) {
+    scopes = 'ошибка: ' + err;
+  }
+
+  lines.push('Права токена: ' + scopes);
+  lines.push('Право читать Диск: ' + (scopes.indexOf('drive') !== -1 ? 'есть' : 'НЕТ'));
+
+  var spreadsheetId = getSpreadsheet_().getId();
+  var probe = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId +
+    '?fields=name,parents&supportsAllDrives=true', {});
+  lines.push('Ответ Диска на запрос о таблице: ' + probe.getResponseCode());
+  if (probe.getResponseCode() !== 200) {
+    lines.push('Что ответил Google: ' + probe.getContentText().substring(0, 300));
+  } else {
+    var data = JSON.parse(probe.getContentText());
+    lines.push('Таблица: ' + data.name + ', папок-родителей: ' + ((data.parents || []).length));
+
+    var folder = statementsFolder_();
+    lines.push(folder.error ? 'Папка выписок: ' + folder.error : 'Папка выписок найдена: ' + folder.name);
+  }
+
+  var message = lines.join('\n');
   console.log(message);
   return message;
 }
