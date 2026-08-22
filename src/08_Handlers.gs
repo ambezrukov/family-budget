@@ -913,6 +913,9 @@ function handleReceipt_(message, fileId, sourceType) {
   if (/^[\w.\-]+\.(pdf|jpe?g|png|heic|webp)$/i.test(caption)) caption = '';
 
   tgSendChatAction_(chatId, 'typing');
+  // Чек из файла разбирается дольше снимка: страниц больше, позиций тоже.
+  // Молчание в это время читается как «бот не получил»
+  if (kind === 'файл') tgSend_(chatId, 'Взял чек, читаю…');
 
   var file = tgDownloadFile_(fileId);
   if (!file) {
@@ -961,6 +964,8 @@ function handleReceipt_(message, fileId, sourceType) {
 function processReceiptAnswer_(message, receipts, source) {
   var chatId = message.chat.id;
   var caption = String(source.comment || '').trim();
+
+  receipts = mergePagesOfOneReceipt_(receipts);
 
   // Несколько чеков сразу — каждый станет отдельной записью
   if (receipts.length > 1) {
@@ -1967,4 +1972,67 @@ function telegramName_(from) {
   if (name) return name;
   if (from.username) return '@' + from.username;
   return String(from.id || '');
+}
+
+/**
+ * Склеивает «чеки», которые на самом деле страницы одного документа.
+ *
+ * PDF из магазина часто состоит из нескольких страниц: позиции, итог,
+ * штрихкод для выхода, налоговая накладная. Модель принимает их за отдельные
+ * чеки — и 22.08.2026 покупка в «Рами Леви» записалась дважды, на 2 302,98 ₪
+ * вместо 1 151,49 ₪. Ошибка тихая: сумма правдоподобная, а бюджет испорчен.
+ *
+ * Признак одного документа: магазин тот же, а сумма либо совпадает, либо не
+ * прочиталась вовсе.
+ */
+function mergePagesOfOneReceipt_(receipts) {
+  if (!receipts || receipts.length < 2) return receipts || [];
+
+  function shopKey(receipt) {
+    return String(receipt.store || receipt.storeRu || '')
+      .toLowerCase().replace(/[^\wא-ת]+/g, ' ').trim();
+  }
+
+  var first = receipts[0];
+  var firstShop = shopKey(first);
+  if (!firstShop) return receipts;
+
+  var sameDocument = receipts.every(function (receipt) {
+    var shop = shopKey(receipt);
+    // Названия страниц одной покупки совпадают или входят одно в другое:
+    // «רמי לוי» и «רמי לוי שיווק השקמה»
+    var sameShop = shop === firstShop ||
+      shop.indexOf(firstShop) === 0 || firstShop.indexOf(shop) === 0;
+    var total = Number(receipt.total) || 0;
+    var sameTotal = !total || Math.abs(total - (Number(first.total) || 0)) < 0.011;
+    return sameShop && sameTotal;
+  });
+
+  if (!sameDocument) return receipts;
+
+  // Оставляем страницу с наибольшими данными: суммой и списком позиций
+  var best = receipts[0];
+  receipts.forEach(function (receipt) {
+    var betterTotal = (Number(receipt.total) || 0) > (Number(best.total) || 0);
+    var betterItems = (receipt.items || []).length > (best.items || []).length;
+    if (betterTotal || betterItems) best = receipt;
+  });
+
+  // Позиции могли распределиться по страницам — собираем все
+  var items = [];
+  var seen = {};
+  receipts.forEach(function (receipt) {
+    (receipt.items || []).forEach(function (item) {
+      var key = String(item.original || item.name || '') + ':' + String(item.price || '');
+      if (seen[key]) return;
+      seen[key] = true;
+      items.push(item);
+    });
+  });
+  if (items.length) best.items = items;
+
+  logEvent_('Страницы одного чека объединены', {
+    было: receipts.length, магазин: best.store || best.storeRu, сумма: best.total
+  });
+  return [best];
 }

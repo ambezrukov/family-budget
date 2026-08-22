@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.10.2';
+var BOT_VERSION = '1.10.3';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1328,7 +1328,17 @@ var GEMINI_QUOTA_OUT_ = false;
 // Сколько всего времени отводим на один разбор со всеми повторами и сменой
 // моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
 // запись расхода с ответом — поэтому берём меньше половины.
-var GEMINI_TIME_BUDGET_MS = 150000;
+var GEMINI_TIME_BUDGET_MS = 120000;
+
+// Когда начали обрабатывать входящее сообщение. Google убивает скрипт через
+// шесть минут без предупреждения — а на длинном чеке бот успевает и перебрать
+// модели, и дозапросить позиции. Общий счётчик не даёт подойти к обрыву.
+var RUN_STARTED_ = new Date().getTime();
+var RUN_LIMIT_MS = 240000;
+
+function runElapsedMs_() {
+  return new Date().getTime() - RUN_STARTED_;
+}
 
 /**
  * Низкоуровневый вызов модели.
@@ -1367,6 +1377,12 @@ function geminiJson_(options) {
 
   restorePreferredModel_();
 
+  if (runElapsedMs_() > RUN_LIMIT_MS) {
+    logEvent_('Запрос к модели отменён по времени', { прошло: Math.round(runElapsedMs_() / 1000) + ' с' });
+    GEMINI_BUSY_ = true;
+    return null;
+  }
+
   var started = new Date().getTime();
   var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
   var raw = geminiFetchWithRetry_(url, body, options.attempts, started);
@@ -1377,7 +1393,8 @@ function geminiJson_(options) {
   if (!raw && GEMINI_BUSY_ && !options.noFallback) {
     var spares = spareModels_(options.model);
     for (var i = 0; i < spares.length && !raw; i++) {
-      if (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS) {
+      if (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS ||
+          runElapsedMs_() > RUN_LIMIT_MS) {
         logEvent_('Перебор моделей остановлен по времени', { осталось: spares.slice(i).join(', ') });
         break;
       }
@@ -1930,6 +1947,10 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
 
   var prompt =
     'На изображении — кассовый чек или счёт. Извлеки данные о покупке.\n\n' +
+    'Если это PDF или многостраничный документ — почти наверняка перед тобой ' +
+    'ОДИН чек: страницы продолжают друг друга (позиции, итог, штрихкод для ' +
+    'выхода, налоговая накладная той же покупки). Дроби на несколько чеков ' +
+    'только если видишь разные магазины и разные итоговые суммы.\n\n' +
     'Сначала посмотри, сколько на изображении чеков. Их может быть несколько: ' +
     'люди кладут рядом два-три чека и снимают одним кадром. Верни КАЖДЫЙ чек ' +
     'отдельным элементом списка receipts, со своими суммой, магазином и датой. ' +
@@ -1983,7 +2004,10 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
   // ещё раз, коротко и только про позиции
   if (answer && answer.receipts && answer.receipts.length === 1) {
     var receipt = answer.receipts[0];
-    if (receipt.readable && receipt.total > 0 && (!receipt.items || !receipt.items.length)) {
+    // Второй запрос стоит времени: затевать его есть смысл, только пока до
+    // предела выполнения далеко
+    if (receipt.readable && receipt.total > 0 && (!receipt.items || !receipt.items.length) &&
+        runElapsedMs_() < RUN_LIMIT_MS / 2) {
       var items = geminiReceiptItems_(base64Image, mimeType);
       if (items && items.length) {
         receipt.items = items;
@@ -4041,6 +4065,9 @@ function handleReceipt_(message, fileId, sourceType) {
   if (/^[\w.\-]+\.(pdf|jpe?g|png|heic|webp)$/i.test(caption)) caption = '';
 
   tgSendChatAction_(chatId, 'typing');
+  // Чек из файла разбирается дольше снимка: страниц больше, позиций тоже.
+  // Молчание в это время читается как «бот не получил»
+  if (kind === 'файл') tgSend_(chatId, 'Взял чек, читаю…');
 
   var file = tgDownloadFile_(fileId);
   if (!file) {
@@ -4089,6 +4116,8 @@ function handleReceipt_(message, fileId, sourceType) {
 function processReceiptAnswer_(message, receipts, source) {
   var chatId = message.chat.id;
   var caption = String(source.comment || '').trim();
+
+  receipts = mergePagesOfOneReceipt_(receipts);
 
   // Несколько чеков сразу — каждый станет отдельной записью
   if (receipts.length > 1) {
@@ -5097,6 +5126,69 @@ function telegramName_(from) {
   return String(from.id || '');
 }
 
+/**
+ * Склеивает «чеки», которые на самом деле страницы одного документа.
+ *
+ * PDF из магазина часто состоит из нескольких страниц: позиции, итог,
+ * штрихкод для выхода, налоговая накладная. Модель принимает их за отдельные
+ * чеки — и 22.08.2026 покупка в «Рами Леви» записалась дважды, на 2 302,98 ₪
+ * вместо 1 151,49 ₪. Ошибка тихая: сумма правдоподобная, а бюджет испорчен.
+ *
+ * Признак одного документа: магазин тот же, а сумма либо совпадает, либо не
+ * прочиталась вовсе.
+ */
+function mergePagesOfOneReceipt_(receipts) {
+  if (!receipts || receipts.length < 2) return receipts || [];
+
+  function shopKey(receipt) {
+    return String(receipt.store || receipt.storeRu || '')
+      .toLowerCase().replace(/[^\wא-ת]+/g, ' ').trim();
+  }
+
+  var first = receipts[0];
+  var firstShop = shopKey(first);
+  if (!firstShop) return receipts;
+
+  var sameDocument = receipts.every(function (receipt) {
+    var shop = shopKey(receipt);
+    // Названия страниц одной покупки совпадают или входят одно в другое:
+    // «רמי לוי» и «רמי לוי שיווק השקמה»
+    var sameShop = shop === firstShop ||
+      shop.indexOf(firstShop) === 0 || firstShop.indexOf(shop) === 0;
+    var total = Number(receipt.total) || 0;
+    var sameTotal = !total || Math.abs(total - (Number(first.total) || 0)) < 0.011;
+    return sameShop && sameTotal;
+  });
+
+  if (!sameDocument) return receipts;
+
+  // Оставляем страницу с наибольшими данными: суммой и списком позиций
+  var best = receipts[0];
+  receipts.forEach(function (receipt) {
+    var betterTotal = (Number(receipt.total) || 0) > (Number(best.total) || 0);
+    var betterItems = (receipt.items || []).length > (best.items || []).length;
+    if (betterTotal || betterItems) best = receipt;
+  });
+
+  // Позиции могли распределиться по страницам — собираем все
+  var items = [];
+  var seen = {};
+  receipts.forEach(function (receipt) {
+    (receipt.items || []).forEach(function (item) {
+      var key = String(item.original || item.name || '') + ':' + String(item.price || '');
+      if (seen[key]) return;
+      seen[key] = true;
+      items.push(item);
+    });
+  });
+  if (items.length) best.items = items;
+
+  logEvent_('Страницы одного чека объединены', {
+    было: receipts.length, магазин: best.store || best.storeRu, сумма: best.total
+  });
+  return [best];
+}
+
 
 // ===========================================================================
 // 09_Main
@@ -5113,6 +5205,7 @@ function telegramName_(from) {
  * Иначе телеграм начнёт повторять доставку одного и того же сообщения.
  */
 function doPost(e) {
+  RUN_STARTED_ = new Date().getTime();
   try {
     // Необязательная защита адреса: если задано свойство WEBHOOK_SECRET,
     // принимаем только запросы с этим параметром в адресе.
@@ -7575,9 +7668,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Длинные чеки записываются с позициями. Чек «Рами Леви» на 66 строк попал в таблицу одной суммой: у ответа модели есть предел длины, и список обрывался ещё до того, как начаться. Предел поднят, а если позиции всё равно вернулись пустыми — бот спрашивает их отдельным коротким запросом",
-  "В подсказке модели сказано прямо: перечислить все позиции, не сокращая",
-  "Имя файла больше не попадает в описание записи: телеграм иногда подставляет его в подпись, и в таблице оказывалось «2_5208…pdf»"
+  "Многостраничный PDF больше не превращается в два чека. Страницы одной покупки — позиции, итог, штрихкод для выхода — модель принимала за отдельные чеки, и «Рами Леви» записался дважды: 2 302,98 ₪ вместо 1 151,49 ₪. Теперь страницы с тем же магазином и той же (или нечитаемой) суммой склеиваются в одну запись, а позиции с них собираются вместе",
+  "Появился общий предел времени на обработку сообщения. Перебор моделей плюс дозапрос позиций подбирались к шестиминутному лимиту Google, после которого скрипт убивают без предупреждения — и бот замолкал на полуслове",
+  "Получив чек файлом, бот сразу пишет «взял, читаю»"
 ];
 
 

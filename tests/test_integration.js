@@ -491,6 +491,26 @@ const partialRows = expenses().getRange(expenses().getLastRow() - 1, 1, 2, 17).g
 check('суммы верны', partialRows.map(r => r[2]).join(',') === '90,54',
   partialRows.map(r => r[2]).join(','));
 
+console.log('\n=== Страницы одного PDF — не два чека ===');
+
+// PDF из магазина состоит из нескольких страниц: позиции, итог, штрихкод для
+// выхода. Модель приняла их за два чека, и покупка в «Рами Леви» записалась
+// дважды — 2 302,98 ₪ вместо 1 151,49 ₪
+gemini({ receipt: () => ({ receipts: [
+  { total: 1151.49, currency: 'ILS', datetime: '', store: 'רמי לוי שיווק השקמה',
+    storeRu: 'Рами Леви', category: 'Продукты', subcategory: 'Супермаркет',
+    items: [{ name: 'Молоко', original: 'חלב', price: 6.9 }], tips: 0, readable: true, note: '' },
+  { total: 0, currency: 'ILS', datetime: '', store: 'רמי לוי', storeRu: 'Рами Леви',
+    category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: '' }
+] }) });
+
+const beforePages = rowsCount();
+post({ message: msg({ document: { file_id: 'doc10', mime_type: 'application/pdf' } }) });
+check('записана одна трата, а не две', rowsCount() === beforePages + 1,
+  'добавлено: ' + (rowsCount() - beforePages));
+row = lastRow();
+check('сумма не удвоилась', row[2] === 1151.49, String(row[2]));
+
 console.log('\n=== Длинный чек: позиции дозапрашиваются ===');
 
 // 22.08.2026 чек «Рами Леви» на 66 позиций записался одной суммой: модель
