@@ -435,6 +435,7 @@ function statementPeriod_(operations) {
  */
 function importStatementRows_(rows, fileName, fileKey) {
   var parsed = parseStatement_(rows, fileName);
+  if (parsed.ok) parsed.fileRows = rows.length;
   if (!parsed.ok) {
     logEvent_('Выписка не разобрана', { файл: fileName, причина: parsed.error });
     return { ok: false, error: parsed.error };
@@ -446,7 +447,7 @@ function importStatementRows_(rows, fileName, fileKey) {
     строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
   });
 
-  return { ok: true, source: parsed.source, stats: stats };
+  return { ok: true, source: parsed.source, stats: stats, fileRows: parsed.fileRows };
 }
 
 /**
@@ -460,7 +461,9 @@ function importReportText_(fileName, result) {
   var s = result.stats;
   var lines = [
     '<b>' + escapeHtml_(fileName) + '</b> · ' + escapeHtml_(result.source),
-    'Строк в файле: ' + s.total,
+    // Две цифры вместо одной: если разбор споткнётся и увидит меньше строк,
+    // чем есть в файле, это будет видно сразу, а не всплывёт через неделю
+    'Строк в файле: ' + (result.fileRows || s.total) + ', из них операций: ' + s.total,
     'Записано новых: <b>' + s.added + '</b>'
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);

@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.9.2';
+var BOT_VERSION = '1.9.3';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -7483,9 +7483,8 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Отсечка по дате начала учёта заработала. Таблица хранит «15.08.2026» как настоящую дату, а не текст, и разбор её не понимал — из-за этого в бюджет уехали июльские строки первой же выписки",
-  "Платежи карточным компаниям в банковской выписке распознаются и без номера карты: «כרטיסי אשראי», «מקס איט פיננסי», «כאל» — это перевод денег своей же карте, а не трата. Раньше такие строки удваивали расходы",
-  "Команда /uchet, увидев в «Операциях» строки старше отсечки, предлагает кнопкой их убрать"
+  "Бот читает CSV своим разбором. В выписке Hapoalim попадается «בע\"מ» — кавычка посреди слова, и строгий разборщик Google считал её началом текста в кавычках, склеивая строки. Из выписки на 42 операции читалась ровно половина, причём терялись самые свежие строки",
+  "В отчёте об импорте теперь две цифры: сколько строк в файле и сколько из них стало операциями. Расхождение между ними видно сразу"
 ];
 
 
@@ -7930,6 +7929,7 @@ function statementPeriod_(operations) {
  */
 function importStatementRows_(rows, fileName, fileKey) {
   var parsed = parseStatement_(rows, fileName);
+  if (parsed.ok) parsed.fileRows = rows.length;
   if (!parsed.ok) {
     logEvent_('Выписка не разобрана', { файл: fileName, причина: parsed.error });
     return { ok: false, error: parsed.error };
@@ -7941,7 +7941,7 @@ function importStatementRows_(rows, fileName, fileKey) {
     строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
   });
 
-  return { ok: true, source: parsed.source, stats: stats };
+  return { ok: true, source: parsed.source, stats: stats, fileRows: parsed.fileRows };
 }
 
 /**
@@ -7955,7 +7955,9 @@ function importReportText_(fileName, result) {
   var s = result.stats;
   var lines = [
     '<b>' + escapeHtml_(fileName) + '</b> · ' + escapeHtml_(result.source),
-    'Строк в файле: ' + s.total,
+    // Две цифры вместо одной: если разбор споткнётся и увидит меньше строк,
+    // чем есть в файле, это будет видно сразу, а не всплывёт через неделю
+    'Строк в файле: ' + (result.fileRows || s.total) + ', из них операций: ' + s.total,
     'Записано новых: <b>' + s.added + '</b>'
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
@@ -8004,9 +8006,73 @@ function rowsFromCsv_(blob) {
   } catch (err) {
     text = blob.getDataAsString();
   }
-  text = text.replace(/^﻿/, '');
-  return Utilities.parseCsv(text);
+  return parseCsvRows_(text.replace(/^﻿/, ''));
 }
+
+/**
+ * Свой разбор CSV вместо Utilities.parseCsv.
+ *
+ * Причина простая: выписка Hapoalim содержит поля вроде «אורגד ש.נ בע"מ» —
+ * двойная кавычка стоит посреди незакавыченного поля. Строгий разборщик
+ * считает её началом закавыченного текста и склеивает строки: 22.08.2026 из
+ * выписки на 42 операции бот прочитал ровно половину, а вторая половина —
+ * все свежие августовские строки — молча пропала.
+ *
+ * Правило здесь мягче: кавычка что-то значит, только если поле с неё
+ * начинается. В середине слова это обычный символ, чем она и является.
+ */
+function parseCsvRows_(text) {
+  var rows = [];
+  var row = [];
+  var field = '';
+  var quoted = false;
+  var atFieldStart = true;
+  var NEWLINE = String.fromCharCode(10);
+  var RETURN = String.fromCharCode(13);
+
+  for (var i = 0; i < text.length; i++) {
+    var ch = text.charAt(i);
+
+    if (quoted) {
+      if (ch === '"') {
+        if (text.charAt(i + 1) === '"') { field += '"'; i++; }
+        else quoted = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"' && atFieldStart) { quoted = true; atFieldStart = false; continue; }
+
+    if (ch === ',') {
+      row.push(field.trim());
+      field = '';
+      atFieldStart = true;
+      continue;
+    }
+
+    if (ch === NEWLINE || ch === RETURN) {
+      if (ch === RETURN && text.charAt(i + 1) === NEWLINE) i++;
+      row.push(field.trim());
+      // Пустые строки между блоками выписки пропускаем
+      if (row.join('')) rows.push(row);
+      row = [];
+      field = '';
+      atFieldStart = true;
+      continue;
+    }
+
+    field += ch;
+    atFieldStart = false;
+  }
+
+  row.push(field.trim());
+  if (row.join('')) rows.push(row);
+
+  return rows;
+}
+
 
 /**
  * Строки из Excel — через временную копию в виде Google Таблицы.
