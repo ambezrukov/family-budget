@@ -155,7 +155,9 @@ function miniAppPayload_(monthKey) {
   var from = monthStart_(month);
   var to = monthEnd_(month);
 
-  var all = readExpenses_({});
+  // Страница показывает бюджет целиком: и записанное руками, и траты по
+  // картам из выписок
+  var all = budgetExpenses_({});
   var expenses = all.filter(function (item) { return item.date >= from && item.date <= to; });
 
   var allIncomes = readIncomes_({});

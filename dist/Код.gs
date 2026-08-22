@@ -27,6 +27,8 @@
  *   19_Directories
  *   20_Xlsx
  *   21_Incomes
+ *   22_Budget
+ *   23_Categorize
  */
 
 // ===========================================================================
@@ -51,7 +53,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.14.1';
+var BOT_VERSION = '1.15.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -2680,7 +2682,7 @@ function totalOf_(expenses) {
  */
 function reportCurrentMonth_() {
   var now = new Date();
-  var expenses = readExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
+  var expenses = budgetExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
   if (!expenses.length) return 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.';
 
   var total = totalOf_(expenses);
@@ -2718,7 +2720,7 @@ function reportIncomes_() {
   var from = monthStart_(now);
   var to = monthEnd_(now);
   var incomes = readIncomes_({ from: from, to: to });
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
 
   if (!incomes.length) {
     return 'За ' + monthTitle_(now).toLowerCase() + ' доходов не записано.\n' +
@@ -2754,7 +2756,7 @@ function balanceLine_(incomeTotal, expenseTotal) {
  * Последние десять записей.
  */
 function reportLastTen_() {
-  var expenses = readExpenses_({});
+  var expenses = budgetExpenses_({});
   if (!expenses.length) return 'Записей пока нет.';
   var last = expenses.slice(-10).reverse();
 
@@ -2776,7 +2778,7 @@ function reportToday_() {
   var now = new Date();
   var from = startOfDay_(now);
   var to = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 23, 59, 59);
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
   if (!expenses.length) return 'Сегодня расходов не записано.';
 
   var lines = ['<b>Сегодня: ' + formatMoney_(totalOf_(expenses)) + '</b>', ''];
@@ -2852,6 +2854,7 @@ function helpText_() {
     '/otchet — отчёт за прошлый месяц',
     '/import — разобрать выписки из папки «Выписки» на Диске',
     '/postupleniya — разобрать приходы на счёт: доход или перевод',
+    '/kategorii — разложить незнакомые магазины из выписок по категориям',
     '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
     '/model — какая модель распознаёт чеки и как её сменить',
     '/spravka — эта справка',
@@ -2878,11 +2881,11 @@ function helpText_() {
 function buildMonthlyReport_(anyDateInMonth) {
   var from = monthStart_(anyDateInMonth);
   var to = monthEnd_(anyDateInMonth);
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
   var incomes = readIncomes_({ from: from, to: to });
 
   var prevDate = new Date(from.getFullYear(), from.getMonth() - 1, 1);
-  var prevExpenses = readExpenses_({ from: monthStart_(prevDate), to: monthEnd_(prevDate) });
+  var prevExpenses = budgetExpenses_({ from: monthStart_(prevDate), to: monthEnd_(prevDate) });
 
   var lines = ['<b>Отчёт за ' + monthTitle_(from).toLowerCase() + '</b>', ''];
 
@@ -3322,6 +3325,10 @@ function handleCommand_(message, text) {
       return;
     case '/uchet':
       handleAccountingStart_(message, text);
+      return;
+    case '/kategorii':
+    case '/categories':
+      handleCategorizeCommand_(message);
       return;
     case '/postupleniya':
     case '/prihod':
@@ -7185,7 +7192,9 @@ function miniAppPayload_(monthKey) {
   var from = monthStart_(month);
   var to = monthEnd_(month);
 
-  var all = readExpenses_({});
+  // Страница показывает бюджет целиком: и записанное руками, и траты по
+  // картам из выписок
+  var all = budgetExpenses_({});
   var expenses = all.filter(function (item) { return item.date >= from && item.date <= to; });
 
   var allIncomes = readIncomes_({});
@@ -7754,7 +7763,12 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Новые категории расходов дописываются в таблицу сами при обновлении бота — как это уже работало для доходов. Строки, названия которых там есть, не трогаются: ключевые слова могли быть поправлены руками"
+  "Траты по картам наконец считаются в бюджете. Отчёты и страница «Бюджет» берут оба листа сразу: ваши записи из «Расходов» и покупки из «Операций». Ничего никуда не копируется — сумма собирается при показе",
+  "Из выписок в бюджет идёт только потраченное: строки «не трата», приходы, будущие платежи и покупки, уже склеенные с вашей записью, пропускаются. У склеенной пары считается ваша запись — в ней категория и комментарий",
+  "Дата берётся по дню покупки, а не списания: потратили в августе — значит трата августовская, даже если карта спишет в сентябре",
+  "Автор проставляется по реестру карт, а в записи видно, откуда она: «Cal · 9926», «Isracard · 8322»",
+  "Команда /kategorii разбирает незнакомые магазины из выписок: один запрос к модели на весь список сразу, а не на каждую строку. Ответ ложится в справочники — русское название в «Переводы», само название в ключевые слова категории, и дальше эти магазины узнаются бесплатно",
+  "После импорта бот пишет, сколько трат осталось без категории"
 ];
 
 
@@ -8413,6 +8427,14 @@ function importReportText_(fileName, result) {
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
+
+  // Без категории трата попадёт в отчёт безымянной строкой — лучше сказать
+  // об этом сразу, пока человек рядом
+  var unknown = uncategorizedOperationsCount_();
+  if (unknown) {
+    lines.push('');
+    lines.push('Без категории пока: ' + unknown + ' — разложить: /kategorii');
+  }
   if (!s.added && !s.dupes) lines.push('Ничего подходящего не нашлось — проверьте, тот ли файл.');
   return lines.join('\n');
 }
@@ -9683,4 +9705,342 @@ function withRussianHint_(text) {
   if (!hint) return source;
   if (source.toLowerCase().indexOf(hint.toLowerCase()) !== -1) return source;
   return source + ' (' + hint + ')';
+}
+
+
+// ===========================================================================
+// 22_Budget
+// ===========================================================================
+
+/**
+ * 22_Budget.gs — что считается тратой месяца.
+ *
+ * Траты приходят двумя путями: человек записывает их сам (лист «Расходы» —
+ * наличные, чеки, ссылки из SMS) и они же приезжают из выписок (лист
+ * «Операции»). Складывать листы напрямую нельзя: одна покупка попадает в оба.
+ *
+ * Поэтому бюджет собирается на лету — без третьего листа и без копий. Из
+ * «Операций» берётся только то, что действительно потрачено и ещё не учтено
+ * ручной записью.
+ */
+
+/**
+ * Строки выписок, которые считаются тратой.
+ *
+ * options: {from, to} — границы периода по дате покупки.
+ *
+ * Почему по дате покупки, а не списания: деньги ушли из семьи, когда её член
+ * расплатился на кассе. Карта спишет их 10 сентября, но трата — августовская,
+ * иначе месяцы перемешаются и «сколько мы потратили в августе» потеряет смысл.
+ */
+function operationExpenses_(options) {
+  options = options || {};
+
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+
+  var cards = readCards_();
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var result = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+
+    if (String(row[14]).trim()) continue;          // «не трата»
+    var kind = String(row[13] || '');
+    if (kind === 'поступление' || kind === 'к сведению') continue;
+
+    // Связь с ручной записью: покупку уже посчитали как запись человека,
+    // в ней есть категория и комментарий. Пометка «отдельно» означает
+    // обратное — человек сказал, что это разные траты
+    var link = String(row[16] || '').trim();
+    if (link && link !== 'отдельно') continue;
+
+    var date = row[0] instanceof Date ? row[0] : parseCellDate_(row[0]);
+    if (!date) continue;
+    if (options.from && date < options.from) continue;
+    if (options.to && date > options.to) continue;
+
+    var amount = Number(row[2]) || 0;
+    if (!amount) continue;
+
+    var card = String(row[8] || '');
+    var known = cards[card];
+
+    result.push({
+      row: i + 2,
+      fromOperations: true,
+      created: date,
+      date: date,
+      chargeDate: row[1] || '',
+      amount: amount,
+      currency: String(row[3] || 'ILS'),
+      baseAmount: Number(row[4]) || amount,
+      category: String(row[11] || '') || FALLBACK_CATEGORY,
+      subcategory: String(row[12] || ''),
+      description: withRussianHint_(String(row[10] || '')) || 'Покупка по карте',
+      store: String(row[10] || ''),
+      items: '',
+      // Автора берём из реестра карт: в выписке его нет, а вопрос «кто это
+      // потратил» возникает первым
+      author: String(row[9] || '') || (known ? known.owner : ''),
+      sourceType: card ? String(row[7] || 'выписка') + ' · ' + card : String(row[7] || 'выписка'),
+      rawText: String(row[18] || ''),
+      categorySource: 'выписка',
+      fileLink: '',
+      kind: 'расход',
+      id: String(row[19] || '')
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Все траты периода: записанные руками и пришедшие из выписок.
+ */
+function budgetExpenses_(options) {
+  var manual = readExpenses_(options || {});
+  return manual.concat(operationExpenses_(options));
+}
+
+/**
+ * Сколько трат из выписок ещё не разложено по категориям.
+ * Нужно для подсказки: без категорий отчёт по месяцу выглядит бессмысленно.
+ */
+function uncategorizedOperationsCount_() {
+  return operationExpenses_({}).filter(function (item) {
+    return !item.category || item.category === FALLBACK_CATEGORY;
+  }).length;
+}
+
+
+// ===========================================================================
+// 23_Categorize
+// ===========================================================================
+
+/**
+ * 23_Categorize.gs — разбор незнакомых магазинов из выписок.
+ *
+ * В выписке нет ни категории, ни русского названия: «שווארמה חאזן-קניון ח»,
+ * «דרדסטור רמת אלון», «סטפן שניצל». Спрашивать модель про каждую строку
+ * нельзя — на банковской выписке это полторы сотни запросов и исчерпанный
+ * за минуту дневной лимит.
+ *
+ * Поэтому спрашиваем один раз про весь список сразу, а ответ кладём в
+ * справочники: русское название — в «Переводы», название магазина — в
+ * ключевые слова нужной категории. Дальше эти магазины узнаются словарём,
+ * бесплатно и навсегда.
+ */
+
+var CATEGORIZE_BATCH_ = 40;
+
+/**
+ * Названия магазинов, которых словарь ещё не знает.
+ */
+function unknownStores_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var seen = {};
+  var stores = [];
+
+  rows.forEach(function (row) {
+    if (String(row[14]).trim()) return;            // «не трата» категорий не требует
+    if (String(row[11] || '').trim()) return;      // категория уже стоит
+
+    var store = String(row[10] || '').trim();
+    if (!store || seen[store]) return;
+
+    // Словарь мог пополниться после импорта — проверяем ещё раз
+    if (categorizeByDictionary_(store.toLowerCase())) return;
+
+    seen[store] = true;
+    stores.push(store);
+  });
+
+  return stores;
+}
+
+/**
+ * Спрашивает модель про список магазинов разом.
+ * Возвращает [{store, name, category, subcategory}].
+ */
+function geminiClassifyStores_(stores) {
+  if (!stores.length) return [];
+
+  var pairs = [];
+  readCategories_().forEach(function (item) {
+    pairs.push(item.category + (item.subcategory ? ' · ' + item.subcategory : ''));
+  });
+
+  var answer = geminiJson_({
+    model: modelForText_(),
+    systemInstruction: 'Ты помощник семейного учёта расходов в Израиле. ' +
+      'Отвечай только строгим JSON по заданной схеме.',
+    parts: [{ text:
+      'Ниже список названий магазинов и услуг из банковских выписок — на иврите ' +
+      'и английском, часто в сокращении. Для КАЖДОГО названия верни:\n' +
+      '- store: название ровно как в списке;\n' +
+      '- name: понятное русское название («שווארמה חאזן» → «Шаварма Хазан»);\n' +
+      '- category и subcategory: строго из этого списка пар, ничего не выдумывая:\n' +
+      pairs.join('; ') + '\n\n' +
+      'Если по названию понять невозможно — категория «' + FALLBACK_CATEGORY + '».\n\n' +
+      'Список:\n' + stores.map(function (store, i) { return (i + 1) + '. ' + store; }).join('\n')
+    }],
+    schema: {
+      type: 'OBJECT',
+      properties: {
+        stores: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              store: { type: 'STRING' },
+              name: { type: 'STRING' },
+              category: { type: 'STRING' },
+              subcategory: { type: 'STRING' }
+            },
+            required: ['store', 'category']
+          }
+        }
+      },
+      required: ['stores']
+    },
+    maxOutputTokens: 16384
+  });
+
+  return answer && answer.stores ? answer.stores : [];
+}
+
+/**
+ * Дописывает название магазина в ключевые слова его категории.
+ * Так следующий импорт разложит эту строку сам, без модели.
+ */
+function rememberStoreCategory_(store, category, subcategory) {
+  var sheet = ensureSheet_(SHEET_CATEGORIES, CATEGORY_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return false;
+
+  var rows = sheet.getRange(2, 1, last - 1, 3).getValues();
+  var key = String(store || '').toLowerCase().trim();
+  if (!key) return false;
+
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() !== category) continue;
+    if (String(rows[i][1]).trim() !== String(subcategory || '').trim()) continue;
+
+    var keywords = String(rows[i][2] || '');
+    if (keywords.toLowerCase().indexOf(key) !== -1) return false;
+
+    sheet.getRange(i + 2, 3).setValue(keywords ? keywords + ', ' + key : key);
+    CATEGORIES_CACHE_ = null;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Проставляет категорию во всех строках «Операций» с этим магазином.
+ */
+function applyStoreCategory_(store, category, subcategory) {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var touched = 0;
+
+  rows.forEach(function (row, position) {
+    if (String(row[10] || '').trim() !== store) return;
+    if (String(row[11] || '').trim()) return;
+    sheet.getRange(position + 2, 12, 1, 2).setValues([[category, subcategory || '']]);
+    touched++;
+  });
+
+  return touched;
+}
+
+/**
+ * Разбирает незнакомые магазины пачкой. Возвращает отчёт для чата.
+ */
+function categorizeOperations_(limit) {
+  var stores = unknownStores_();
+  if (!stores.length) return { ok: true, stores: 0, rows: 0 };
+
+  var batch = stores.slice(0, limit || CATEGORIZE_BATCH_);
+  var answers = geminiClassifyStores_(batch);
+
+  if (!answers.length) {
+    logEvent_('Магазины не разобраны', { просили: batch.length, перегрузка: GEMINI_BUSY_ });
+    return { ok: false, busy: GEMINI_BUSY_, quota: GEMINI_QUOTA_OUT_, stores: batch.length };
+  }
+
+  var known = categoryNames_();
+  var rows = 0;
+  var learned = 0;
+
+  answers.forEach(function (item) {
+    var store = String(item.store || '').trim();
+    if (!store) return;
+
+    var category = String(item.category || '').trim();
+    if (known.indexOf(category) === -1) category = FALLBACK_CATEGORY;
+    var subcategory = String(item.subcategory || '').trim();
+
+    rows += applyStoreCategory_(store, category, subcategory);
+    if (rememberStoreCategory_(store, category, subcategory)) learned++;
+
+    var name = String(item.name || '').trim();
+    if (name && name !== store) rememberTranslation_(store, name, 'магазин');
+  });
+
+  logEvent_('Магазины разобраны по категориям', {
+    магазинов: answers.length, строк: rows, вСловарь: learned, осталось: stores.length - batch.length
+  });
+
+  return {
+    ok: true,
+    stores: answers.length,
+    rows: rows,
+    learned: learned,
+    left: Math.max(0, stores.length - batch.length)
+  };
+}
+
+/**
+ * Команда /kategorii: разложить незнакомые магазины по категориям.
+ */
+function handleCategorizeCommand_(message) {
+  var chatId = message.chat.id;
+  var pending = unknownStores_();
+
+  if (!pending.length) {
+    tgSend_(chatId, 'Все траты из выписок уже разложены по категориям.');
+    return;
+  }
+
+  tgSend_(chatId, 'Разбираю незнакомые магазины: <b>' + pending.length + '</b>. ' +
+    'Это один запрос к модели, займёт полминуты…');
+
+  var result = categorizeOperations_();
+
+  if (!result.ok) {
+    tgSend_(chatId, result.quota
+      ? 'На сегодня лимит распознавания у Google исчерпан — попробуйте завтра.'
+      : 'Модель сейчас занята. Попробуйте через несколько минут: <code>/kategorii</code>');
+    return;
+  }
+
+  var lines = [
+    'Разобрано магазинов: <b>' + result.stores + '</b>',
+    'Обновлено строк: ' + result.rows,
+    'Запомнено в справочнике: ' + result.learned + ' — дальше узнаю их сам'
+  ];
+  if (result.left) lines.push('Осталось на следующий заход: ' + result.left);
+
+  tgSend_(chatId, lines.join('\n'));
 }

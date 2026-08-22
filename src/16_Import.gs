@@ -649,6 +649,14 @@ function importReportText_(fileName, result) {
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
+
+  // Без категории трата попадёт в отчёт безымянной строкой — лучше сказать
+  // об этом сразу, пока человек рядом
+  var unknown = uncategorizedOperationsCount_();
+  if (unknown) {
+    lines.push('');
+    lines.push('Без категории пока: ' + unknown + ' — разложить: /kategorii');
+  }
   if (!s.added && !s.dupes) lines.push('Ничего подходящего не нашлось — проверьте, тот ли файл.');
   return lines.join('\n');
 }

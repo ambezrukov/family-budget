@@ -80,7 +80,7 @@ function totalOf_(expenses) {
  */
 function reportCurrentMonth_() {
   var now = new Date();
-  var expenses = readExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
+  var expenses = budgetExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
   if (!expenses.length) return 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.';
 
   var total = totalOf_(expenses);
@@ -118,7 +118,7 @@ function reportIncomes_() {
   var from = monthStart_(now);
   var to = monthEnd_(now);
   var incomes = readIncomes_({ from: from, to: to });
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
 
   if (!incomes.length) {
     return 'За ' + monthTitle_(now).toLowerCase() + ' доходов не записано.\n' +
@@ -154,7 +154,7 @@ function balanceLine_(incomeTotal, expenseTotal) {
  * Последние десять записей.
  */
 function reportLastTen_() {
-  var expenses = readExpenses_({});
+  var expenses = budgetExpenses_({});
   if (!expenses.length) return 'Записей пока нет.';
   var last = expenses.slice(-10).reverse();
 
@@ -176,7 +176,7 @@ function reportToday_() {
   var now = new Date();
   var from = startOfDay_(now);
   var to = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 23, 59, 59);
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
   if (!expenses.length) return 'Сегодня расходов не записано.';
 
   var lines = ['<b>Сегодня: ' + formatMoney_(totalOf_(expenses)) + '</b>', ''];
@@ -252,6 +252,7 @@ function helpText_() {
     '/otchet — отчёт за прошлый месяц',
     '/import — разобрать выписки из папки «Выписки» на Диске',
     '/postupleniya — разобрать приходы на счёт: доход или перевод',
+    '/kategorii — разложить незнакомые магазины из выписок по категориям',
     '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
     '/model — какая модель распознаёт чеки и как её сменить',
     '/spravka — эта справка',
@@ -278,11 +279,11 @@ function helpText_() {
 function buildMonthlyReport_(anyDateInMonth) {
   var from = monthStart_(anyDateInMonth);
   var to = monthEnd_(anyDateInMonth);
-  var expenses = readExpenses_({ from: from, to: to });
+  var expenses = budgetExpenses_({ from: from, to: to });
   var incomes = readIncomes_({ from: from, to: to });
 
   var prevDate = new Date(from.getFullYear(), from.getMonth() - 1, 1);
-  var prevExpenses = readExpenses_({ from: monthStart_(prevDate), to: monthEnd_(prevDate) });
+  var prevExpenses = budgetExpenses_({ from: monthStart_(prevDate), to: monthEnd_(prevDate) });
 
   var lines = ['<b>Отчёт за ' + monthTitle_(from).toLowerCase() + '</b>', ''];
 
