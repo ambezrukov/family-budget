@@ -73,7 +73,10 @@ function xlsxSharedStrings_(xml) {
   if (!xml) return [];
   // Выгрузки Isracard подписывают теги пространством имён — «<x:si>» вместо
   // «<si>», поэтому приставку всюду считаем необязательной
-  var items = xml.match(/<(?:\w+:)?si[\s>][\s\S]*?<\/(?:\w+:)?si>|<(?:\w+:)?si\/>/g) || [];
+  // Порядок веток важен: пустой самозакрывающийся тег должен разбираться
+  // первым, иначе «жадная до ближайшего закрытия» ветка проглотит его вместе
+  // со следующим элементом — и данные съедут на колонку
+  var items = xml.match(/<(?:\w+:)?si\b[^>]*\/>|<(?:\w+:)?si\b[^>]*>[\s\S]*?<\/(?:\w+:)?si>/g) || [];
 
   return items.map(function (item) {
     // Внутри одной ячейки текст бывает разбит на куски с разным оформлением
@@ -106,11 +109,11 @@ function xlsxRowsFromParts_(sheetXml, sharedXml) {
   var rows = [];
 
   var rowMatches = sheetXml.match(
-    /<(?:\w+:)?row[\s>][\s\S]*?<\/(?:\w+:)?row>|<(?:\w+:)?row[^>]*\/>/g) || [];
+    /<(?:\w+:)?row\b[^>]*\/>|<(?:\w+:)?row\b[^>]*>[\s\S]*?<\/(?:\w+:)?row>/g) || [];
 
   rowMatches.forEach(function (rowXml) {
     var cells = rowXml.match(
-      /<(?:\w+:)?c[\s>][\s\S]*?<\/(?:\w+:)?c>|<(?:\w+:)?c[^>]*\/>/g) || [];
+      /<(?:\w+:)?c\b[^>]*\/>|<(?:\w+:)?c\b[^>]*>[\s\S]*?<\/(?:\w+:)?c>/g) || [];
     var line = [];
 
     cells.forEach(function (cellXml) {
@@ -126,7 +129,9 @@ function xlsxRowsFromParts_(sheetXml, sharedXml) {
         var raw = cellXml.match(/<(?:\w+:)?v>([\s\S]*?)<\/(?:\w+:)?v>/);
         var text = raw ? xmlUnescape_(raw[1]) : '';
         if (type === 's') {
-          value = shared[Number(text)] === undefined ? '' : shared[Number(text)];
+          // Пустая ячейка со ссылкой на словарь: без этой проверки Number('')
+          // даёт ноль, и в пустую графу подставляется первое слово словаря
+          value = text === '' || shared[Number(text)] === undefined ? '' : shared[Number(text)];
         } else if (text === '') {
           value = '';
         } else {

@@ -52,12 +52,15 @@ var STATEMENT_FORMATS_ = [
     columns: {
       date: ['תאריך עסקה'],
       merchant: ['שם בית העסק', 'שם בית עסק'],
-      amount: ['סכום חיוב', 'סכום החיוב'],
+      // Выгрузка по одной карте называет колонку «סכום חיוב», а сводная по
+      // всем картам — «סכום בש"ח»: сумма уже в шекелях, пересчитывать нечего
+      amount: ['סכום חיוב', 'סכום החיוב', 'סכום בש"ח', 'סכום בש״ח'],
       currency: ['מטבע חיוב', 'מטבע'],
       originalAmount: ['סכום עסקה מקורי', 'סכום עסקה'],
       originalCurrency: ['מטבע עסקה מקורי', 'מטבע עסקה'],
       chargeDate: ['תאריך חיוב', 'מועד חיוב'],
-      card: ['4 ספרות אחרונות', 'מספר כרטיס'],
+      // В сводной выгрузке карта своя у каждой строки: «מאסטרקארד 6256»
+      card: ['4 ספרות אחרונות', 'מספר כרטיס', 'כרטיס'],
       kind: ['סוג עסקה'],
       note: ['הערות', 'פירוט נוסף']
     }
@@ -364,7 +367,19 @@ function parseStatement_(rows, fileName, sheetName) {
       if (/תשלום|תשלומים|קרדיט|רכישה עתידית/.test(kindText)) operation.kind = 'рассрочка';
       if (/הוראת קבע/.test(kindText)) operation.kind = 'постоянное поручение';
 
-      if (pending) operation.kind = 'ждёт списания';
+      // «זיכוי» — возврат денег магазином: сумма приходит со знаком минус
+      if (/זיכוי/.test(kindText) || operation.amount < 0) operation.kind = 'возврат';
+
+      // «עסקה בקליטה» — операция ещё в обработке, до списания не дошла
+      if (pending || /בקליטה/.test(operation.note)) operation.kind = 'ждёт списания';
+
+      // Покупка в чужой валюте: сумму в шекелях Cal ставит в основную графу,
+      // а исходную прячет в примечание — «סכום העסקה הוא 16000.0 AMD»
+      var foreign = operation.note.match(/הוא\s*([\d.,]+)\s*([A-Z]{3}|€|\$|₽)/);
+      if (foreign && !operation.originalAmount) {
+        operation.originalAmount = parseStatementNumber_(foreign[1]);
+        operation.originalCurrency = statementCurrency_(foreign[2]);
+      }
       if (informational) {
         // «К сведению» — это ещё не потраченные деньги: будущие платежи по
         // рассрочке и остаток кредита. В расходы месяца им нельзя

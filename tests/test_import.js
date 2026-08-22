@@ -97,6 +97,29 @@ check('обычная покупка отмечена покупкой', maxPars
 check('дата списания прочитана', call('formatDate_', maxParsed.operations[1].chargeDate) === '15.06.2026',
   call('formatDate_', maxParsed.operations[1].chargeDate));
 
+console.log('\n=== Пустые ячейки не сдвигают колонки ===');
+
+// Выгрузка Cal по всем картам пишет пустую ячейку самозакрывающимся тегом:
+// «<c r="B2" t="s" />». Разбор «до ближайшего закрытия» проглатывал его
+// вместе со следующей ячейкой, и строка съезжала на колонку влево
+const gapSheet = '<x:worksheet><x:sheetData>' +
+  '<x:row r="1"><x:c r="A1" t="s"><x:v>0</x:v></x:c>' +
+  '<x:c r="B1" t="s"><x:v>1</x:v></x:c><x:c r="C1" t="s"><x:v>2</x:v></x:c></x:row>' +
+  '<x:row r="2"><x:c r="A2"><x:v>46256</x:v></x:c>' +
+  '<x:c r="B2" t="s" />' +
+  '<x:c r="C2" t="s"><x:v>3</x:v></x:c></x:row>' +
+  '</x:sheetData></x:worksheet>';
+const gapShared = '<x:sst><x:si><x:t>дата</x:t></x:si><x:si><x:t>вторая</x:t></x:si>' +
+  '<x:si><x:t>третья</x:t></x:si><x:si><x:t>значение</x:t></x:si></x:sst>';
+
+const gapRows = call('xlsxRowsFromParts_', gapSheet, gapShared);
+check('строки прочитаны', gapRows.length === 2, String(gapRows.length));
+check('значение осталось в своей колонке', gapRows[1][2] === 'значение',
+  JSON.stringify(gapRows[1]));
+// Number('') равен нулю, и без отдельной проверки в пустую графу попадало
+// первое слово словаря
+check('пустая ячейка осталась пустой', gapRows[1][1] === '', JSON.stringify(gapRows[1][1]));
+
 console.log('\n=== Max: три листа в одном файле ===');
 
 // Max раскладывает операции по трём листам. Покупки последних дней лежат на
@@ -141,6 +164,40 @@ check('остаток кредита не считается тратой',
   maxParsedInfo.operations[0].notTrackable === 'да' &&
   maxParsedInfo.operations[0].kind === 'к сведению',
   maxParsedInfo.operations[0].kind + '/' + maxParsedInfo.operations[0].notTrackable);
+
+console.log('\n=== Сводная выписка Cal по всем картам ===');
+
+// У Маши три карты в одном файле: суммы уже в шекелях («סכום בש"ח»), карта
+// указана в каждой строке («מאסטרקארד 6256»), а исходная валюта заграничной
+// покупки спрятана в примечании
+const LF = String.fromCharCode(10);
+const calAll = [
+  ['פירוט עסקאות למריה', '', '', '', '', '', '', ''],
+  ['תאריך' + LF + 'עסקה', 'שם בית עסק', 'סכום' + LF + 'בש"ח', 'כרטיס',
+   'מועד' + LF + 'חיוב', 'סוג' + LF + 'עסקה', 'מזהה כרטיס', 'הערות'],
+  [46256, 'Google Animal Hospital', 90, 'מאסטרקארד 6256', '', 'רכישה רגילה', '', 'עסקה בקליטה'],
+  [46254, 'CARREFOUR', 131.82, 'מאסטרקארד 6256', 46267, 'רגילה', '', ''],
+  [46252, 'מסעדת סאלה', 66, 'ויזה 9926', 46267, 'רגילה', '', ''],
+  [46168, 'PAUL CAFE ZVARTNOTS', 155.29, 'מאסטרקארד 6256', 46170, 'רגילה', '',
+   'סכום העסקה הוא 19500.0 AMD'],
+  [46168, 'APPLE.COM/BILL', -14.9, 'מאסטרקארד 6256', 46170, 'זיכוי', '', '']
+];
+
+const calAllParsed = call('parseStatement_', calAll, 'פירוט עסקאות וזיכויים.xlsx', '');
+check('выписка узнана как Cal', calAllParsed.ok && calAllParsed.source === 'Cal',
+  calAllParsed.error || calAllParsed.source);
+check('прочитаны все строки', calAllParsed.operations.length === 5,
+  String(calAllParsed.operations.length));
+check('карта берётся из строки, а не из имени файла',
+  calAllParsed.operations[2].card === '9926', calAllParsed.operations[2].card);
+check('операция в обработке помечена', calAllParsed.operations[0].kind === 'ждёт списания',
+  calAllParsed.operations[0].kind);
+check('исходная валюта вынута из примечания',
+  calAllParsed.operations[3].originalAmount === 19500 &&
+  calAllParsed.operations[3].originalCurrency === 'AMD',
+  calAllParsed.operations[3].originalAmount + ' ' + calAllParsed.operations[3].originalCurrency);
+check('возврат магазина отмечен возвратом', calAllParsed.operations[4].kind === 'возврат',
+  calAllParsed.operations[4].kind);
 
 console.log('\n=== Выписка Cal ===');
 
