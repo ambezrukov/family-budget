@@ -171,6 +171,33 @@ function setupSpreadsheet() {
   translations.setColumnWidth(3, 140);
   translations.setColumnWidth(4, 150);
 
+  // Лист «Операции» — сюда ложатся строки выписок
+  var operations = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  operations.setColumnWidth(1, 110);
+  operations.setColumnWidth(2, 110);
+  operations.setColumnWidth(11, 240);
+  operations.setColumnWidth(16, 260);
+  operations.getRange(2, 1, operations.getMaxRows() - 1, 2).setNumberFormat('dd.MM.yyyy');
+  operations.getRange(2, 3, operations.getMaxRows() - 1, 1).setNumberFormat('#,##0.00');
+  operations.getRange(2, 5, operations.getMaxRows() - 1, 1).setNumberFormat('#,##0.00');
+
+  // Журнал импорта: по нему видно, какой файл когда разобран
+  var imports = ensureSheet_(SHEET_IMPORTS, IMPORT_COLUMNS);
+  imports.setColumnWidth(1, 130);
+  imports.setColumnWidth(2, 300);
+  imports.getRange(2, 1, imports.getMaxRows() - 1, 1).setNumberFormat('dd.MM.yyyy HH:mm');
+
+  // Реестр карт и список источников. Наполняются руками: номера карт и имена
+  // — личные данные, им не место в коде, который лежит в открытом репозитории
+  var cards = ensureSheet_(SHEET_CARDS, CARD_COLUMNS);
+  cards.setColumnWidth(2, 190);
+  cards.setColumnWidth(5, 380);
+
+  var sources = ensureSheet_(SHEET_SOURCES, SOURCE_COLUMNS);
+  sources.setColumnWidth(1, 190);
+  sources.setColumnWidth(2, 260);
+  sources.setColumnWidth(4, 420);
+
   // Лист «Лог»
   var log = ensureSheet_(SHEET_LOG, LOG_COLUMNS);
   log.setColumnWidth(1, 150);

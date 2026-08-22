@@ -21,6 +21,9 @@
  *   13_MiniApp
  *   14_Updates
  *   15_Changes
+ *   16_Import
+ *   17_ImportFiles
+ *   18_Merge
  */
 
 // ===========================================================================
@@ -45,7 +48,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.6.3';
+var BOT_VERSION = '1.7.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -62,6 +65,10 @@ var SHEET_INCOME_CATEGORIES = 'Категории доходов'; // у дох�
 var SHEET_SETTINGS = 'Настройки';
 var SHEET_LOG = 'Лог';
 var SHEET_TRANSLATIONS = 'Переводы';
+var SHEET_OPERATIONS = 'Операции';   // строки из выписок банка и карточных компаний
+var SHEET_IMPORTS = 'Импорт';        // журнал разобранных файлов
+var SHEET_CARDS = 'Карты';           // реестр карт: по 4 цифрам узнаём владельца
+var SHEET_SOURCES = 'Источники';     // откуда и что скачивать — для страницы импорта
 
 // ---------------------------------------------------------------------------
 // Ключи свойств скрипта
@@ -98,7 +105,9 @@ function defaultSettings_() {
     ['Чат месячного отчёта', '', 'Куда слать отчёт 1-го числа. Можно несколько адресатов через запятую — каждый получит свой экземпляр.'],
     ['Кто обновляет бота', '', 'Телеграм-айди того, у кого есть доступ к редактору кода. Ему приходят сообщения о новых версиях. Пусто = первый из разрешённых.'],
     ['Модель для медиа', GEMINI_MODEL_MULTIMODAL, 'Модель Gemini для голоса и чеков.'],
-    ['Модель для текста', GEMINI_MODEL_TEXT, 'Модель Gemini для категоризации текста.']
+    ['Модель для текста', GEMINI_MODEL_TEXT, 'Модель Gemini для категоризации текста.'],
+    ['Учёт с', '', 'Дата, раньше которой строки выписок не импортируются: до неё бюджет не вели. Формат ДД.ММ.ГГГГ, пусто = брать всё.'],
+    ['Папка выписок', 'Выписки', 'Название папки на Google Диске рядом с таблицей, откуда бот забирает файлы по команде /импорт.']
   ];
 }
 
@@ -397,6 +406,47 @@ var CATEGORY_COLUMNS = ['Категория', 'Подкатегория', 'Кл�
 var TRANSLATION_COLUMNS = ['Оригинал', 'Перевод', 'Что это', 'Впервые встретилось'];
 var SETTINGS_COLUMNS = ['Параметр', 'Значение', 'Пояснение'];
 var LOG_COLUMNS = ['Время', 'Событие', 'Подробности'];
+
+// Лист «Операции» — строки выписок. Здесь деньги как их видит банк или
+// карточная компания: без позиций чека и без наших комментариев. Чек и ручная
+// запись такую строку дополняют, а не заводят вторую.
+var OPERATION_COLUMNS = [
+  'Дата операции',      // 1  — когда куплено
+  'Дата списания',      // 2  — когда ушло со счёта (у кредиток отличается)
+  'Сумма',              // 3  — в валюте списания
+  'Валюта',             // 4
+  'Сумма в базовой',    // 5
+  'Исходная сумма',     // 6  — для покупок за границей
+  'Исходная валюта',    // 7
+  'Источник',           // 8  — банк / Isracard / Max / Cal
+  'Карта',              // 9  — 4 цифры, у банковских строк пусто
+  'Владелец',           // 10
+  'Магазин',            // 11
+  'Категория',          // 12
+  'Подкатегория',       // 13
+  'Тип операции',       // 14 — покупка / рассрочка / списание по карте / перевод
+  'Не трата',           // 15 — «да» у общих списаний и переводов между своими
+  'Ключ',               // 16 — по нему отсеиваем повторный импорт
+  'Запись в расходах',  // 17 — id склеенной записи листа «Расходы»
+  'Файл',               // 18 — имя выписки, из которой строка пришла
+  'Заметки',            // 19 — что было в примечании выписки
+  'ID'                  // 20
+];
+
+var IMPORT_COLUMNS = [
+  'Когда', 'Файл', 'Источник', 'Период', 'Строк в файле',
+  'Новых', 'Повторов', 'Пропущено по дате', 'Ключ файла'
+];
+
+// Реестр карт: по четырём цифрам из выписки узнаём, чья это карта и что за
+// ней стоит. Заодно из него строится страница «что и откуда скачивать».
+var CARD_COLUMNS = [
+  'Карта', 'Название', 'Эмитент', 'Владелец', 'Для чего', 'День списания', 'Статус'
+];
+
+var SOURCE_COLUMNS = [
+  'Источник', 'Кабинет', 'Карты', 'Что скачивать', 'Формат', 'Как часто', 'Порядок'
+];
 
 // ---------------------------------------------------------------------------
 // Доступ к таблице
@@ -2609,12 +2659,19 @@ function helpText_() {
     'по незнакомой ссылке прочитаю страницу или PDF. Если не открылась —',
     'скажу об этом, и тогда пришлите скриншот или сумму текстом.',
     '',
+    '<b>Выпиской</b> — пришлите файл выгрузки из банка или карточной компании',
+    '(Excel или CSV). Узнаю источник сам, разложу строки по операциям и',
+    'скажу, сколько новых. Повторно тот же файл ничего не задвоит.',
+    'Если файлов несколько, сложите их в папку «Выписки» рядом с таблицей',
+    'и напишите /import — разберу всё разом.',
+    '',
     '<b>Команды</b>',
     '/mesyac — расходы за текущий месяц по категориям',
     '/poslednie — последние 10 записей',
     '/segodnya — сумма за сегодня',
     '/dohody — доходы за месяц и сколько осталось',
     '/otchet — отчёт за прошлый месяц',
+    '/import — разобрать выписки из папки «Выписки» на Диске',
     '/spravka — эта справка',
     '/imya — как подписывать меня в таблице («/imya Толя»);',
     '   имя жены или мужа — «/imya 673335047 = Маша»',
@@ -2998,6 +3055,11 @@ function handleMessage_(message) {
   // из браузера, и его достаточно переслать сюда.
   if (message.document) {
     var mime = String(message.document.mime_type || '');
+    // Выписка приходит тем же путём, что и чек, — различаем по расширению
+    if (looksLikeStatement_(message.document.file_name, mime)) {
+      handleStatementDocument_(message, message.document);
+      return;
+    }
     if (mime.indexOf('image/') === 0 || mime === 'application/pdf') {
       handleReceipt_(message, message.document.file_id, mime === 'application/pdf' ? 'файл' : 'фото');
     } else {
@@ -3068,6 +3130,10 @@ function handleCommand_(message, text) {
     case '/update':
       tgSend_(chatId, 'Смотрю, есть ли обновления…');
       checkForUpdates(false, chatId);
+      return;
+    case '/import':
+    case '/importt':
+      importFromFolder_(chatId);
       return;
     case '/versiya':
     case '/version':
@@ -4452,6 +4518,24 @@ function handleCallback_(callback) {
     return;
   }
 
+  // Склейка строки выписки с ручной записью
+  if (data.indexOf('mg:') === 0) {
+    var parts = data.substring(3).split(':');
+    var merged = mergeOperationWithRecord_(parts[0], parts[1]);
+    tgAnswerCallback_(callback.id, merged ? 'Склеил' : 'Строка не найдена');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n✅ Считаем одной тратой', []);
+    return;
+  }
+
+  if (data.indexOf('mgn:') === 0) {
+    keepOperationSeparate_(data.substring(4));
+    tgAnswerCallback_(callback.id, 'Оставил раздельно');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n↔️ Разные траты', []);
+    return;
+  }
+
   // Как обновиться: файл с кодом и указания
   if (data.indexOf('update:') === 0) {
     tgAnswerCallback_(callback.id, 'Присылаю');
@@ -5046,6 +5130,33 @@ function setupSpreadsheet() {
   translations.setColumnWidth(2, 220);
   translations.setColumnWidth(3, 140);
   translations.setColumnWidth(4, 150);
+
+  // Лист «Операции» — сюда ложатся строки выписок
+  var operations = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  operations.setColumnWidth(1, 110);
+  operations.setColumnWidth(2, 110);
+  operations.setColumnWidth(11, 240);
+  operations.setColumnWidth(16, 260);
+  operations.getRange(2, 1, operations.getMaxRows() - 1, 2).setNumberFormat('dd.MM.yyyy');
+  operations.getRange(2, 3, operations.getMaxRows() - 1, 1).setNumberFormat('#,##0.00');
+  operations.getRange(2, 5, operations.getMaxRows() - 1, 1).setNumberFormat('#,##0.00');
+
+  // Журнал импорта: по нему видно, какой файл когда разобран
+  var imports = ensureSheet_(SHEET_IMPORTS, IMPORT_COLUMNS);
+  imports.setColumnWidth(1, 130);
+  imports.setColumnWidth(2, 300);
+  imports.getRange(2, 1, imports.getMaxRows() - 1, 1).setNumberFormat('dd.MM.yyyy HH:mm');
+
+  // Реестр карт и список источников. Наполняются руками: номера карт и имена
+  // — личные данные, им не место в коде, который лежит в открытом репозитории
+  var cards = ensureSheet_(SHEET_CARDS, CARD_COLUMNS);
+  cards.setColumnWidth(2, 190);
+  cards.setColumnWidth(5, 380);
+
+  var sources = ensureSheet_(SHEET_SOURCES, SOURCE_COLUMNS);
+  sources.setColumnWidth(1, 190);
+  sources.setColumnWidth(2, 260);
+  sources.setColumnWidth(4, 420);
 
   // Лист «Лог»
   var log = ensureSheet_(SHEET_LOG, LOG_COLUMNS);
@@ -7186,5 +7297,872 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Внизу страницы «Бюджет» появилась ссылка на саму таблицу: категории, курсы и справочники правятся там, а искать её в переписке с ботом было неудобно"
+  "Бот принимает выписки банка и карточных компаний: Excel или CSV, файлом в чат или папкой «Выписки» на Диске рядом с таблицей (команда /import). Источник узнаёт сам — по названиям столбцов, а не по имени файла",
+  "Строки ложатся в новый лист «Операции»: дата покупки и дата списания, карта, владелец, магазин, исходная валюта для заграничных покупок",
+  "Повторная загрузка того же файла ничего не задваивает: у Isracard ключом служит номер ваучера, у остальных — дата, карта, магазин и сумма",
+  "Общее месячное списание по карте в банковской выписке помечается «не трата»: покупки по этой карте уже пришли из выгрузки эмитента",
+  "Настройка «Учёт с» отсекает строки, которые старше начала учёта",
+  "Похожие траты (та же сумма, дата в пределах трёх дней) бот показывает кнопкой «Одно и то же?» — решает человек, вслепую никто ничего не склеивает",
+  "Новые листы «Карты» и «Источники»: реестр карт и памятка, что и откуда выгружать. Заполняются руками — это личные данные"
 ];
+
+
+// ===========================================================================
+// 16_Import
+// ===========================================================================
+
+/**
+ * 16_Import.gs — разбор выписок банка и карточных компаний.
+ *
+ * Устройство простое: файл превращается в таблицу строк, по названиям
+ * столбцов узнаётся источник, строки раскладываются в лист «Операции».
+ *
+ * Почему ищем строку заголовков, а не читаем с фиксированной позиции: у всех
+ * четырёх источников сверху лежит шапка своей высоты, и она меняется от
+ * выгрузки к выгрузке (месяц, имя владельца, итог). Названия столбцов при
+ * этом устойчивы.
+ */
+
+// Названия столбцов, по которым узнаём источник. Иврит взят прямо из выгрузок.
+var STATEMENT_FORMATS_ = [
+  {
+    source: 'Isracard',
+    marker: ['מס\' שובר'],
+    columns: {
+      date: ['תאריך רכישה'],
+      merchant: ['שם בית עסק'],
+      amount: ['סכום חיוב'],
+      currency: ['מטבע חיוב'],
+      originalAmount: ['סכום עסקה'],
+      originalCurrency: ['מטבע עסקה'],
+      voucher: ['מס\' שובר'],
+      note: ['פירוט נוסף']
+    }
+  },
+  {
+    source: 'Max',
+    marker: ['4 ספרות אחרונות'],
+    columns: {
+      date: ['תאריך עסקה'],
+      merchant: ['שם בית העסק'],
+      category: ['קטגוריה'],
+      card: ['4 ספרות אחרונות'],
+      kind: ['סוג עסקה'],
+      amount: ['סכום חיוב'],
+      currency: ['מטבע חיוב'],
+      originalAmount: ['סכום עסקה מקורי'],
+      originalCurrency: ['מטבע עסקה מקורי'],
+      chargeDate: ['תאריך חיוב'],
+      note: ['הערות']
+    }
+  },
+  {
+    source: 'Cal',
+    marker: ['תאריך עסקה', 'שם בית העסק'],
+    columns: {
+      date: ['תאריך עסקה'],
+      merchant: ['שם בית העסק', 'שם בית עסק'],
+      amount: ['סכום חיוב', 'סכום החיוב'],
+      currency: ['מטבע חיוב', 'מטבע'],
+      originalAmount: ['סכום עסקה מקורי', 'סכום עסקה'],
+      originalCurrency: ['מטבע עסקה מקורי', 'מטבע עסקה'],
+      chargeDate: ['תאריך חיוב', 'מועד חיוב'],
+      card: ['4 ספרות אחרונות', 'מספר כרטיס'],
+      kind: ['סוג עסקה'],
+      note: ['הערות', 'פירוט נוסף']
+    }
+  },
+  {
+    source: 'Банк',
+    marker: ['חובה', 'זכות'],
+    columns: {
+      date: ['תאריך'],
+      operation: ['הפעולה', 'תיאור הפעולה'],
+      details: ['פרטים'],
+      reference: ['אסמכתא'],
+      debit: ['חובה'],
+      credit: ['זכות'],
+      balance: ['יתרה בש\'\'ח', 'יתרה לאחר פעולה'],
+      valueDate: ['תאריך ערך'],
+      payee: ['לטובת'],
+      purpose: ['עבור']
+    }
+  }
+];
+
+/**
+ * Ищет строку заголовков и определяет источник.
+ * Возвращает {source, headerRow, index: {поле: номер столбца}} или null.
+ */
+function detectStatementFormat_(rows) {
+  var limit = Math.min(rows.length, 30); // шапка ни у кого не длиннее
+
+  for (var r = 0; r < limit; r++) {
+    var cells = (rows[r] || []).map(function (cell) { return String(cell == null ? '' : cell).trim(); });
+    if (!cells.join('')) continue;
+
+    for (var f = 0; f < STATEMENT_FORMATS_.length; f++) {
+      var format = STATEMENT_FORMATS_[f];
+      var hasAll = format.marker.every(function (marker) {
+        return cells.some(function (cell) { return cell.indexOf(marker) !== -1; });
+      });
+      if (!hasAll) continue;
+
+      var index = {};
+      Object.keys(format.columns).forEach(function (field) {
+        var variants = format.columns[field];
+        for (var c = 0; c < cells.length; c++) {
+          for (var v = 0; v < variants.length; v++) {
+            if (cells[c] && cells[c].indexOf(variants[v]) !== -1 && index[field] === undefined) {
+              index[field] = c;
+            }
+          }
+        }
+      });
+
+      return { source: format.source, headerRow: r, index: index };
+    }
+  }
+  return null;
+}
+
+/**
+ * Из шапки Isracard достаём номер карты и дату списания: в самих строках
+ * их нет, а без карты непонятно, чья это трата.
+ */
+function isracardHeaderHints_(rows, headerRow) {
+  var hints = { card: '', chargeDay: '' };
+
+  for (var r = 0; r < headerRow; r++) {
+    var line = (rows[r] || []).map(function (c) { return String(c == null ? '' : c); }).join(' ');
+    // Ищем четыре цифры рядом с названием карты: просто «последние четыре
+    // цифры строки» ловят год из заголовка «פירוט עסקאות · יולי 2026»
+    var card = line.match(/(?:כרטיס|מסטרקארד|מאסטרקארד|ויזה|דירקט|ישראכרט|גולד)[^\d]{0,12}(\d{4})/);
+    if (card && !hints.card && !/^(19|20)\d\d$/.test(card[1])) hints.card = card[1];
+    var charge = line.match(/לחיוב\s*ב-?\s*(\d{1,2})[.\/](\d{1,2})/);
+    if (charge && !hints.chargeDay) hints.chargeDay = charge[1] + '.' + charge[2];
+  }
+  return hints;
+}
+
+/**
+ * Даты в выгрузках бывают тремя видами: настоящая дата (Excel), «11.07.26»
+ * (Isracard) и «04-03-2024» (Max). Разбираем все, иначе строка потеряется.
+ */
+function parseStatementDate_(value) {
+  if (!value && value !== 0) return null;
+  if (Object.prototype.toString.call(value) === '[object Date]') return value;
+
+  var text = String(value).trim();
+  if (!text) return null;
+
+  var m = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+  m = text.match(/^(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/);
+  if (m) {
+    var year = Number(m[3]);
+    if (year < 100) year += 2000;
+    return new Date(year, Number(m[2]) - 1, Number(m[1]));
+  }
+  return null;
+}
+
+/**
+ * Числа приходят и числом, и строкой с запятыми и знаком валюты.
+ */
+function parseStatementNumber_(value) {
+  if (typeof value === 'number') return value;
+  var text = String(value == null ? '' : value).replace(/[^\d.,\-]/g, '').replace(/,/g, '');
+  var number = parseFloat(text);
+  return isNaN(number) ? 0 : number;
+}
+
+function statementCurrency_(value) {
+  var text = String(value == null ? '' : value).trim();
+  if (!text) return 'ILS';
+  if (text.indexOf('₪') !== -1 || text.indexOf('ש') !== -1 || /ILS|NIS/i.test(text)) return 'ILS';
+  if (text.indexOf('$') !== -1 || /USD/i.test(text)) return 'USD';
+  if (text.indexOf('€') !== -1 || /EUR/i.test(text)) return 'EUR';
+  if (text.indexOf('₽') !== -1 || /RUB/i.test(text)) return 'RUB';
+  return text.toUpperCase().substring(0, 3);
+}
+
+/**
+ * Строка банковской выписки, которой соответствует общее списание по карте:
+ * «מסטרקרד», «דירקט», «ויזה כאל» и подобные, а в графе «אסמכתא» — четыре
+ * цифры карты. Такую строку считать тратой нельзя: покупки по этой карте
+ * уже пришли отдельными строками из выгрузки эмитента.
+ */
+function isCardSettlement_(operation, reference, knownCards) {
+  var text = String(operation || '');
+  var byName = /מסטרקרד|מסטרקארד|ויזה|דירקט|ישראכרט|כאל|מקס|max|לאומי קארד/i.test(text);
+  var digits = String(reference || '').replace(/\D/g, '');
+  var byCard = digits.length === 4 && knownCards.indexOf(digits) !== -1;
+  return byName && (byCard || digits.length === 4);
+}
+
+/**
+ * Реестр карт: 4 цифры → {владелец, эмитент, название}.
+ */
+function readCards_() {
+  var sheet = ensureSheet_(SHEET_CARDS, CARD_COLUMNS);
+  var last = sheet.getLastRow();
+  var map = {};
+  if (last < 2) return map;
+
+  sheet.getRange(2, 1, last - 1, CARD_COLUMNS.length).getValues().forEach(function (row) {
+    var digits = String(row[0] == null ? '' : row[0]).replace(/\D/g, '');
+    if (!digits) return;
+    map[digits] = {
+      card: digits,
+      title: String(row[1] || ''),
+      issuer: String(row[2] || ''),
+      owner: String(row[3] || ''),
+      purpose: String(row[4] || ''),
+      chargeDay: String(row[5] || ''),
+      status: String(row[6] || '')
+    };
+  });
+  return map;
+}
+
+/**
+ * Превращает строки файла в операции. Ничего не пишет — только разбирает,
+ * чтобы разбор можно было проверить тестом без таблицы.
+ */
+function parseStatement_(rows, fileName) {
+  var format = detectStatementFormat_(rows);
+  if (!format) return { ok: false, error: 'Не понял, чья это выписка: не нашёл знакомых столбцов' };
+
+  var cards = readCards_();
+  var knownCards = Object.keys(cards);
+  var index = format.index;
+  var hints = format.source === 'Isracard' ? isracardHeaderHints_(rows, format.headerRow) : { card: '', chargeDay: '' };
+  var operations = [];
+
+  function cell(row, field) {
+    var position = index[field];
+    return position === undefined ? '' : row[position];
+  }
+
+  for (var r = format.headerRow + 1; r < rows.length; r++) {
+    var row = rows[r] || [];
+    var date = parseStatementDate_(cell(row, 'date'));
+    if (!date) continue; // итоговые строки и разделители дат не имеют
+
+    var operation = {
+      date: date,
+      chargeDate: parseStatementDate_(cell(row, 'chargeDate')) || null,
+      source: format.source,
+      card: String(cell(row, 'card') || hints.card || '').replace(/\D/g, '').slice(-4),
+      merchant: String(cell(row, 'merchant') || '').trim(),
+      currency: 'ILS',
+      originalAmount: 0,
+      originalCurrency: '',
+      kind: 'покупка',
+      notTrackable: '',
+      note: String(cell(row, 'note') || '').trim(),
+      file: fileName || ''
+    };
+
+    if (format.source === 'Банк') {
+      var debit = parseStatementNumber_(cell(row, 'debit'));
+      var credit = parseStatementNumber_(cell(row, 'credit'));
+      var title = String(cell(row, 'operation') || '').trim();
+      var reference = String(cell(row, 'reference') || '').trim();
+      var details = String(cell(row, 'details') || '').trim();
+
+      if (!debit && !credit) continue;
+
+      operation.merchant = title;
+      operation.note = [details, String(cell(row, 'payee') || ''), String(cell(row, 'purpose') || '')]
+        .filter(function (part) { return String(part).trim(); }).join(' · ');
+      operation.amount = debit || credit;
+      operation.key = 'bank:' + formatDate_(date) + ':' + reference + ':' + operation.amount.toFixed(2);
+
+      if (credit) {
+        operation.kind = 'поступление';
+        operation.notTrackable = 'да'; // доходы ведём отдельно, в тратах их быть не должно
+      } else if (isCardSettlement_(title, reference, knownCards)) {
+        operation.kind = 'списание по карте';
+        operation.notTrackable = 'да'; // покупки уже пришли из выгрузки эмитента
+        operation.card = String(reference).replace(/\D/g, '').slice(-4);
+      }
+    } else {
+      operation.amount = parseStatementNumber_(cell(row, 'amount'));
+      if (!operation.amount) continue;
+
+      operation.currency = statementCurrency_(cell(row, 'currency'));
+      operation.originalAmount = parseStatementNumber_(cell(row, 'originalAmount'));
+      operation.originalCurrency = statementCurrency_(cell(row, 'originalCurrency'));
+      if (operation.originalCurrency === operation.currency &&
+          Math.abs(operation.originalAmount - operation.amount) < 0.005) {
+        operation.originalAmount = 0;
+        operation.originalCurrency = '';
+      }
+
+      var kindText = String(cell(row, 'kind') || '');
+      if (/תשלום|תשלומים|קרדיט|רכישה עתידית/.test(kindText)) operation.kind = 'рассрочка';
+
+      if (format.source === 'Isracard') {
+        var voucher = String(cell(row, 'voucher') || '').replace(/\s/g, '');
+        // Номер ваучера у Isracard уникален — лучшего ключа не найти
+        operation.key = 'isracard:' + voucher;
+        if (!voucher) {
+          operation.key = 'isracard:' + operation.card + ':' + formatDate_(date) + ':' +
+            operation.merchant + ':' + operation.amount.toFixed(2);
+        }
+        if (!operation.chargeDate && hints.chargeDay) {
+          operation.chargeDate = parseStatementDate_(hints.chargeDay + '.' + date.getFullYear());
+        }
+      } else {
+        var prefix = format.source === 'Max' ? 'max:' : 'cal:';
+        operation.key = prefix + operation.card + ':' + formatDate_(date) + ':' +
+          operation.merchant + ':' + operation.amount.toFixed(2);
+      }
+    }
+
+    var known = cards[operation.card];
+    operation.owner = known ? known.owner : '';
+
+    var guess = categorize_(operation.merchant, operation.merchant);
+    operation.category = operation.notTrackable ? '' : guess.category;
+    operation.subcategory = operation.notTrackable ? '' : guess.subcategory;
+
+    operations.push(operation);
+  }
+
+  return { ok: true, source: format.source, operations: operations };
+}
+
+/**
+ * Дата, раньше которой импортировать нечего: до неё бюджет просто не вели.
+ */
+function accountingStartDate_() {
+  var raw = String(setting_('Учёт с', '')).trim();
+  if (!raw) return null;
+  return parseStatementDate_(raw);
+}
+
+/**
+ * Пишет операции в лист, пропуская уже импортированные.
+ */
+function saveOperations_(operations, fileName, fileKey) {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+
+  var seen = {};
+  if (last >= 2) {
+    sheet.getRange(2, 16, last - 1, 1).getValues().forEach(function (row) {
+      if (row[0]) seen[String(row[0])] = true;
+    });
+  }
+
+  var startDate = accountingStartDate_();
+  var rows = [];
+  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0 };
+
+  operations.forEach(function (op) {
+    if (startDate && op.date < startDate) { stats.skipped++; return; }
+    if (seen[op.key]) { stats.dupes++; return; }
+    seen[op.key] = true;
+
+    rows.push([
+      op.date,
+      op.chargeDate || '',
+      op.amount,
+      op.currency,
+      toBaseAmount_(op.amount, op.currency),
+      op.originalAmount || '',
+      op.originalCurrency || '',
+      op.source,
+      op.card || '',
+      op.owner || '',
+      op.merchant,
+      op.category || '',
+      op.subcategory || '',
+      op.kind,
+      op.notTrackable || '',
+      op.key,
+      '', // склейка с записью в «Расходах» проставляется отдельно
+      op.file || fileName || '',
+      op.note || '',
+      newRecordId_()
+    ]);
+    stats.added++;
+  });
+
+  if (rows.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, OPERATION_COLUMNS.length).setValues(rows);
+  }
+
+  var journal = ensureSheet_(SHEET_IMPORTS, IMPORT_COLUMNS);
+  journal.appendRow([
+    new Date(), fileName || '', operations.length ? operations[0].source : '',
+    statementPeriod_(operations), stats.total, stats.added, stats.dupes, stats.skipped, fileKey || ''
+  ]);
+
+  return stats;
+}
+
+/**
+ * Период выписки — для журнала: «15.08.2026 — 22.08.2026».
+ */
+function statementPeriod_(operations) {
+  if (!operations.length) return '';
+  var min = operations[0].date;
+  var max = operations[0].date;
+  operations.forEach(function (op) {
+    if (op.date < min) min = op.date;
+    if (op.date > max) max = op.date;
+  });
+  return formatDate_(min) + ' — ' + formatDate_(max);
+}
+
+/**
+ * Разбирает готовые строки и сохраняет. Возвращает текст отчёта для чата.
+ */
+function importStatementRows_(rows, fileName, fileKey) {
+  var parsed = parseStatement_(rows, fileName);
+  if (!parsed.ok) {
+    logEvent_('Выписка не разобрана', { файл: fileName, причина: parsed.error });
+    return { ok: false, error: parsed.error };
+  }
+
+  var stats = saveOperations_(parsed.operations, fileName, fileKey);
+  logEvent_('Выписка импортирована', {
+    файл: fileName, источник: parsed.source,
+    строк: stats.total, новых: stats.added, повторов: stats.dupes, раньшеУчёта: stats.skipped
+  });
+
+  return { ok: true, source: parsed.source, stats: stats };
+}
+
+/**
+ * Отчёт по импорту одним понятным абзацем.
+ */
+function importReportText_(fileName, result) {
+  if (!result.ok) {
+    return '<b>' + escapeHtml_(fileName) + '</b>\n' + escapeHtml_(result.error);
+  }
+
+  var s = result.stats;
+  var lines = [
+    '<b>' + escapeHtml_(fileName) + '</b> · ' + escapeHtml_(result.source),
+    'Строк в файле: ' + s.total,
+    'Записано новых: <b>' + s.added + '</b>'
+  ];
+  if (s.dupes) lines.push('Уже были: ' + s.dupes);
+  if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
+  if (!s.added && !s.dupes) lines.push('Ничего подходящего не нашлось — проверьте, тот ли файл.');
+  return lines.join('\n');
+}
+
+
+// ===========================================================================
+// 17_ImportFiles
+// ===========================================================================
+
+/**
+ * 17_ImportFiles.gs — как выписка попадает к боту.
+ *
+ * Два пути, оба нужны: файл в чат (быстро, с телефона) и папка на Google
+ * Диске рядом с таблицей (удобно, когда за раз выгружено четыре файла).
+ *
+ * Excel скрипт сам читать не умеет, поэтому файл заливается на Диск с
+ * просьбой преобразовать его в Google Таблицу, читается — и копия удаляется.
+ * Для этого у скрипта есть права: читать файлы Диска и создавать свои.
+ */
+
+var DRIVE_FILES_API_ = 'https://www.googleapis.com/drive/v3/files';
+var DRIVE_UPLOAD_API_ = 'https://www.googleapis.com/upload/drive/v3/files';
+
+function driveRequest_(url, options) {
+  var params = options || {};
+  params.muteHttpExceptions = true;
+  params.headers = params.headers || {};
+  params.headers.Authorization = 'Bearer ' + ScriptApp.getOAuthToken();
+  return UrlFetchApp.fetch(url, params);
+}
+
+/**
+ * Строки из CSV: кодировка бывает и UTF-8 с меткой, и ивритская windows-1255.
+ */
+function rowsFromCsv_(blob) {
+  var text = '';
+  try {
+    text = blob.getDataAsString('UTF-8');
+    // Признак того, что файл на самом деле в другой кодировке: вместо букв
+    // приходят символы замены
+    if (text.indexOf('�') !== -1) text = blob.getDataAsString('windows-1255');
+  } catch (err) {
+    text = blob.getDataAsString();
+  }
+  text = text.replace(/^﻿/, '');
+  return Utilities.parseCsv(text);
+}
+
+/**
+ * Строки из Excel — через временную копию в виде Google Таблицы.
+ */
+function rowsFromExcel_(blob, fileName) {
+  var metadata = { name: 'Разбор выписки ' + (fileName || ''), mimeType: MimeType.GOOGLE_SHEETS };
+  var boundary = '-----statement' + new Date().getTime();
+
+  var payload = Utilities.newBlob(
+    '--' + boundary + '\r\n' +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) + '\r\n' +
+    '--' + boundary + '\r\n' +
+    'Content-Type: ' + (blob.getContentType() || 'application/octet-stream') + '\r\n\r\n'
+  ).getBytes()
+    .concat(blob.getBytes())
+    .concat(Utilities.newBlob('\r\n--' + boundary + '--\r\n').getBytes());
+
+  var response = driveRequest_(DRIVE_UPLOAD_API_ + '?uploadType=multipart&supportsAllDrives=true', {
+    method: 'post',
+    contentType: 'multipart/related; boundary=' + boundary,
+    payload: payload
+  });
+
+  if (response.getResponseCode() !== 200) {
+    logEvent_('Excel не преобразовался', {
+      файл: fileName, код: response.getResponseCode(),
+      ответ: response.getContentText().substring(0, 500)
+    });
+    return null;
+  }
+
+  var id = JSON.parse(response.getContentText()).id;
+  try {
+    var sheet = SpreadsheetApp.openById(id).getSheets()[0];
+    return sheet.getDataRange().getValues();
+  } finally {
+    // Временная копия нужна была ровно на один разбор
+    driveRequest_(DRIVE_FILES_API_ + '/' + id, { method: 'delete' });
+  }
+}
+
+/**
+ * Разбирает файл любого из поддерживаемых видов.
+ */
+function rowsFromStatementBlob_(blob, fileName) {
+  var name = String(fileName || '').toLowerCase();
+  var type = String(blob.getContentType() || '').toLowerCase();
+
+  if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) return rowsFromCsv_(blob);
+  if (/\.xlsx?$/.test(name) || type.indexOf('spreadsheet') !== -1 || type.indexOf('excel') !== -1) {
+    return rowsFromExcel_(blob, fileName);
+  }
+  return null;
+}
+
+/**
+ * Похоже ли присланное на выписку. Чек и выписка приходят одинаково —
+ * документом, поэтому решаем по расширению.
+ */
+function looksLikeStatement_(fileName, mimeType) {
+  var name = String(fileName || '').toLowerCase();
+  var type = String(mimeType || '').toLowerCase();
+  return /\.(csv|xlsx|xls)$/.test(name) ||
+    type.indexOf('csv') !== -1 || type.indexOf('excel') !== -1 || type.indexOf('spreadsheet') !== -1;
+}
+
+/**
+ * Выписка, присланная файлом в чат.
+ */
+function handleStatementDocument_(message, document) {
+  var chatId = message.chat.id;
+  var fileName = String(document.file_name || 'выписка');
+
+  tgSendChatAction_(chatId, 'typing');
+  var file = tgDownloadFile_(document.file_id);
+  if (!file) {
+    tgSend_(chatId, 'Не смог забрать файл. Пришлите ещё раз или положите его в папку «Выписки» на Диске.');
+    return;
+  }
+
+  var rows;
+  try {
+    rows = rowsFromStatementBlob_(file.blob.setName(fileName), fileName);
+  } catch (err) {
+    logEvent_('Сбой чтения выписки', { файл: fileName, ошибка: String(err) });
+    rows = null;
+  }
+
+  if (!rows || !rows.length) {
+    tgSend_(chatId, 'Не смог прочитать файл. Excel я читаю через Google Диск — ' +
+      'если бот ещё не получил к нему доступ, выгрузите выписку в CSV или запустите ' +
+      'в редакторе скрипта функцию <code>authorizeDrive</code>.');
+    return;
+  }
+
+  var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
+  tgSend_(chatId, importReportText_(fileName, result));
+  if (result.ok && result.stats.added) offerMergeCandidates_(chatId);
+}
+
+/**
+ * Папка «Выписки» рядом с таблицей: бот сам находит её по расположению
+ * таблицы, чтобы не заводить ещё один идентификатор в настройках.
+ */
+function statementsFolder_() {
+  var folderName = String(setting_('Папка выписок', 'Выписки')).trim() || 'Выписки';
+  var spreadsheetId = getSpreadsheet_().getId();
+
+  var meta = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId + '?fields=parents', {});
+  if (meta.getResponseCode() !== 200) return { error: 'Нет доступа к Диску' };
+
+  var parents = JSON.parse(meta.getContentText()).parents || [];
+  if (!parents.length) return { error: 'Не понял, в какой папке лежит таблица' };
+
+  var query = "name='" + folderName.replace(/'/g, "\\'") + "' and '" + parents[0] +
+    "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+  var found = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) + '&fields=files(id,name)', {});
+  if (found.getResponseCode() !== 200) return { error: 'Не удалось найти папку' };
+
+  var files = JSON.parse(found.getContentText()).files || [];
+  if (!files.length) return { error: 'Папки «' + folderName + '» рядом с таблицей нет', parent: parents[0] };
+  return { id: files[0].id, name: files[0].name };
+}
+
+/**
+ * Уже разобранные файлы: помним ключ (идентификатор Диска), чтобы повторный
+ * запуск команды не пересчитывал то же самое.
+ */
+function importedFileKeys_() {
+  var journal = ensureSheet_(SHEET_IMPORTS, IMPORT_COLUMNS);
+  var last = journal.getLastRow();
+  var keys = {};
+  if (last < 2) return keys;
+  journal.getRange(2, 9, last - 1, 1).getValues().forEach(function (row) {
+    if (row[0]) keys[String(row[0])] = true;
+  });
+  return keys;
+}
+
+/**
+ * Команда /импорт: разбирает всё новое из папки «Выписки».
+ */
+function importFromFolder_(chatId) {
+  var folder = statementsFolder_();
+  if (folder.error) {
+    tgSend_(chatId, 'Папку с выписками не нашёл: ' + escapeHtml_(folder.error) + '.\n' +
+      'Создайте её рядом с таблицей бюджета — или просто пришлите файл сюда, в чат.');
+    return;
+  }
+
+  var query = "'" + folder.id + "' in parents and trashed=false";
+  var response = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) +
+    '&fields=files(id,name,mimeType,modifiedTime,md5Checksum)&orderBy=name', {});
+  if (response.getResponseCode() !== 200) {
+    tgSend_(chatId, 'Не смог заглянуть в папку «' + escapeHtml_(folder.name) + '».');
+    return;
+  }
+
+  var files = JSON.parse(response.getContentText()).files || [];
+  var done = importedFileKeys_();
+  var fresh = files.filter(function (file) {
+    return looksLikeStatement_(file.name, file.mimeType) &&
+      !done['drive:' + (file.md5Checksum || file.id)];
+  });
+
+  if (!fresh.length) {
+    tgSend_(chatId, files.length
+      ? 'В папке «' + escapeHtml_(folder.name) + '» всё уже разобрано.'
+      : 'Папка «' + escapeHtml_(folder.name) + '» пуста.');
+    return;
+  }
+
+  tgSend_(chatId, 'Разбираю файлов: ' + fresh.length + '…');
+
+  var added = 0;
+  fresh.forEach(function (file) {
+    var content = driveRequest_(DRIVE_FILES_API_ + '/' + file.id + '?alt=media', {});
+    if (content.getResponseCode() !== 200) {
+      tgSend_(chatId, '<b>' + escapeHtml_(file.name) + '</b>\nНе смог скачать файл с Диска.');
+      return;
+    }
+
+    var rows;
+    try {
+      rows = rowsFromStatementBlob_(content.getBlob().setName(file.name), file.name);
+    } catch (err) {
+      logEvent_('Сбой чтения выписки с Диска', { файл: file.name, ошибка: String(err) });
+      rows = null;
+    }
+
+    if (!rows || !rows.length) {
+      tgSend_(chatId, '<b>' + escapeHtml_(file.name) + '</b>\nНе смог прочитать файл.');
+      return;
+    }
+
+    var result = importStatementRows_(rows, file.name, 'drive:' + (file.md5Checksum || file.id));
+    if (result.ok) added += result.stats.added;
+    tgSend_(chatId, importReportText_(file.name, result));
+  });
+
+  if (added) offerMergeCandidates_(chatId);
+}
+
+/**
+ * Разрешение на Диск запрашивается один раз: функция ничего не делает,
+ * кроме обращения к Диску, зато после её запуска в редакторе появляется
+ * окно «Разрешить», и дальше бот работает сам.
+ */
+function authorizeDrive() {
+  var folder = statementsFolder_();
+  var message = folder.error
+    ? 'Доступ к Диску есть, но папку не нашёл: ' + folder.error
+    : 'Доступ к Диску есть, папка найдена: ' + folder.name;
+  console.log(message);
+  return message;
+}
+
+
+// ===========================================================================
+// 18_Merge
+// ===========================================================================
+
+/**
+ * 18_Merge.gs — склейка строк выписки с записями, внесёнными руками.
+ *
+ * Одна покупка попадает в систему дважды: человек записал её ботом сразу, а
+ * через несколько дней та же трата приехала в выписке. Это не ошибка — это
+ * два взгляда на одну операцию. Задача — связать их, чтобы в отчёте трата
+ * осталась одна, а комментарий и категория, проставленные руками, не
+ * потерялись.
+ *
+ * Решение принимает человек: суммы и даты совпадают слишком часто, чтобы
+ * склеивать молча.
+ */
+
+var MERGE_DAYS_ = 3;        // выписка отстаёт от покупки на день-два
+var MERGE_ASK_LIMIT_ = 5;   // больше пяти вопросов подряд — уже допрос
+
+/**
+ * Ищет пары «строка выписки ↔ ручная запись».
+ */
+function findMergeCandidates_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+
+  var operations = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues()
+    .map(function (row, position) {
+      return {
+        row: position + 2,
+        date: row[0],
+        amount: Number(row[2]) || 0,
+        currency: row[3] || 'ILS',
+        source: row[7],
+        merchant: String(row[10] || ''),
+        notTrackable: String(row[14] || ''),
+        merged: String(row[16] || ''),
+        id: String(row[19] || '')
+      };
+    })
+    .filter(function (op) { return !op.notTrackable && !op.merged && op.amount > 0; });
+
+  if (!operations.length) return [];
+
+  // Ручные записи: те, что человек внёс сам. Строки, пришедшие из выписок,
+  // в «Расходах» не появляются, так что сравнивать не с чем не будет
+  var manual = readExpenses_({}).filter(function (item) {
+    return item.sourceType !== 'выписка';
+  });
+  if (!manual.length) return [];
+
+  var pairs = [];
+  var taken = {};
+
+  operations.forEach(function (op) {
+    if (pairs.length >= MERGE_ASK_LIMIT_) return;
+    if (!op.date) return;
+
+    for (var i = 0; i < manual.length; i++) {
+      var record = manual[i];
+      if (taken[record.id]) continue;
+      if (record.currency !== op.currency) continue;
+      if (Math.abs(Number(record.amount) - op.amount) > 0.011) continue;
+
+      var days = Math.abs(record.date - op.date) / (24 * 60 * 60 * 1000);
+      if (days > MERGE_DAYS_) continue;
+
+      taken[record.id] = true;
+      pairs.push({ operation: op, record: record });
+      break;
+    }
+  });
+
+  return pairs;
+}
+
+/**
+ * Спрашивает про найденные пары. Вопрос один на пару — с кнопками.
+ */
+function offerMergeCandidates_(chatId) {
+  var pairs = findMergeCandidates_();
+  if (!pairs.length) return;
+
+  tgSend_(chatId, pairs.length === 1
+    ? 'Нашёл трату, похожую на уже записанную. Это одно и то же?'
+    : 'Нашёл ' + pairs.length + ' трат, похожих на уже записанные. Посмотрите:');
+
+  pairs.forEach(function (pair) {
+    var op = pair.operation;
+    var record = pair.record;
+
+    var text = [
+      '<b>' + formatMoney_(op.amount, op.currency) + '</b>',
+      'Выписка (' + escapeHtml_(String(op.source)) + '): ' +
+        formatDate_(op.date) + ' · ' + escapeHtml_(op.merchant || 'без названия'),
+      'Ваша запись: ' + formatDate_(record.date) + ' · ' +
+        escapeHtml_(record.description || record.store || record.category)
+    ].join('\n');
+
+    tgSend_(chatId, text, [[
+      { text: 'Одно и то же', callback_data: 'mg:' + op.id + ':' + record.id },
+      { text: 'Разные траты', callback_data: 'mgn:' + op.id }
+    ]]);
+  });
+}
+
+/**
+ * Связывает строку выписки с ручной записью.
+ */
+function mergeOperationWithRecord_(operationId, recordId) {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return false;
+
+  var ids = sheet.getRange(2, 20, last - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === String(operationId)) {
+      sheet.getRange(i + 2, 17).setValue(recordId);
+      logEvent_('Строка выписки склеена с записью', { операция: operationId, запись: recordId });
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Помечает, что пара не подходит: иначе бот спросит о ней снова после
+ * следующего импорта.
+ */
+function keepOperationSeparate_(operationId) {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return false;
+
+  var ids = sheet.getRange(2, 20, last - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === String(operationId)) {
+      sheet.getRange(i + 2, 17).setValue('отдельно');
+      return true;
+    }
+  }
+  return false;
+}

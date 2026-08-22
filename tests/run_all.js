@@ -5,7 +5,7 @@ const fs = require('fs');
 
 // Последним прогоняем тот же интеграционный набор, но против собранного
 // dist/Код.gs — именно этот файл вставляется в Apps Script.
-const suites = ['check_all.js', 'test_parser.js', 'test_integration.js', 'BUNDLE:test_integration.js'];
+const suites = ['check_all.js', 'test_parser.js', 'test_import.js', 'test_integration.js', 'BUNDLE:test_integration.js'];
 let failed = 0;
 
 for (const entry of suites) {

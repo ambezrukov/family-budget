@@ -81,6 +81,11 @@ function handleMessage_(message) {
   // из браузера, и его достаточно переслать сюда.
   if (message.document) {
     var mime = String(message.document.mime_type || '');
+    // Выписка приходит тем же путём, что и чек, — различаем по расширению
+    if (looksLikeStatement_(message.document.file_name, mime)) {
+      handleStatementDocument_(message, message.document);
+      return;
+    }
     if (mime.indexOf('image/') === 0 || mime === 'application/pdf') {
       handleReceipt_(message, message.document.file_id, mime === 'application/pdf' ? 'файл' : 'фото');
     } else {
@@ -151,6 +156,10 @@ function handleCommand_(message, text) {
     case '/update':
       tgSend_(chatId, 'Смотрю, есть ли обновления…');
       checkForUpdates(false, chatId);
+      return;
+    case '/import':
+    case '/importt':
+      importFromFolder_(chatId);
       return;
     case '/versiya':
     case '/version':
@@ -1532,6 +1541,24 @@ function handleCallback_(callback) {
     stashKeyboard_(messageId, message.reply_markup ? message.reply_markup.inline_keyboard : null);
     var catRecord = readExpenseById_(catId);
     tgEditKeyboard_(chatId, messageId, categoriesKeyboard_(catId, catRecord ? catRecord.kind : 'расход'));
+    return;
+  }
+
+  // Склейка строки выписки с ручной записью
+  if (data.indexOf('mg:') === 0) {
+    var parts = data.substring(3).split(':');
+    var merged = mergeOperationWithRecord_(parts[0], parts[1]);
+    tgAnswerCallback_(callback.id, merged ? 'Склеил' : 'Строка не найдена');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n✅ Считаем одной тратой', []);
+    return;
+  }
+
+  if (data.indexOf('mgn:') === 0) {
+    keepOperationSeparate_(data.substring(4));
+    tgAnswerCallback_(callback.id, 'Оставил раздельно');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n↔️ Разные траты', []);
     return;
   }
 
