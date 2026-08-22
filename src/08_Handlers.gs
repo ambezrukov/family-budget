@@ -1574,6 +1574,25 @@ function handleCallback_(callback) {
     return;
   }
 
+  // Поступление: доход или перекладывание денег
+  if (data.indexOf('inc:') === 0) {
+    var income = incomeFromOperation_(data.substring(4));
+    tgAnswerCallback_(callback.id, income ? 'Записал доход' : 'Строка не найдена');
+    if (income) {
+      tgEditText_(chatId, messageId, escapeHtml_(String(message.text || '')) +
+        '\n\n💰 Записано в доходы · ' + escapeHtml_(income.category), []);
+    }
+    return;
+  }
+
+  if (data.indexOf('ninc:') === 0) {
+    markOperationNotIncome_(data.substring(5));
+    tgAnswerCallback_(callback.id, 'Понял, это перевод');
+    tgEditText_(chatId, messageId, escapeHtml_(String(message.text || '')) +
+      '\n\n↔️ Перевод, в доходы не пошло', []);
+    return;
+  }
+
   // Склейка строки выписки с ручной записью
   if (data.indexOf('mg:') === 0) {
     var parts = data.substring(3).split(':');

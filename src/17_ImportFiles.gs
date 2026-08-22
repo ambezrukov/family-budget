@@ -211,7 +211,10 @@ function handleStatementDocument_(message, document) {
 
   var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
   tgSend_(chatId, importReportText_(fileName, result));
-  if (result.ok && result.stats.added) offerMergeCandidates_(chatId);
+  if (result.ok && result.stats.added) {
+    offerIncomeCandidates_(chatId);
+    offerMergeCandidates_(chatId);
+  }
 }
 
 /**
@@ -309,7 +312,10 @@ function importFromFolder_(chatId) {
     tgSend_(chatId, importReportText_(name, result));
   });
 
-  if (added) offerMergeCandidates_(chatId);
+  if (added) {
+    offerIncomeCandidates_(chatId);
+    offerMergeCandidates_(chatId);
+  }
 }
 
 /**

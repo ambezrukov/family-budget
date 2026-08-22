@@ -269,6 +269,38 @@ check('после уборки старых не осталось',
   call('countOperationsBefore_', new Date(2026, 7, 15)) === 0,
   String(call('countOperationsBefore_', new Date(2026, 7, 15))));
 
+console.log('\n=== Поступления: доход или перевод ===');
+
+// Приход денег на счёт и доход — не одно и то же: зарплата доход, а возврат
+// долга или перевод с собственного вклада — нет. Поэтому решает человек.
+const incomeRows = [
+  ['תאריך', 'הפעולה', 'פרטים', 'אסמכתא', 'חובה', 'זכות', "יתרה בש''ח", 'תאריך ערך'],
+  ['2026-08-20', 'משכורת', 'зарплата за июль', '900', '', '12000', '1', '2026-08-20'],
+  ['2026-08-21', 'העברה-נייד', 'от Маши', '901', '', '500', '1', '2026-08-21']
+];
+const pendingBefore = call('pendingIncomeOperations_').length;
+call('importStatementRows_', incomeRows, 'банк-доходы.csv', 'файл-доходы');
+
+const pending = call('pendingIncomeOperations_');
+check('поступления ждут решения', pending.length === pendingBefore + 2,
+  pendingBefore + ' → ' + pending.length);
+
+const incomesSheet = call('ensureSheet_', 'Доходы', []);
+const incomesBefore = incomesSheet.getLastRow();
+
+const salary = pending.filter(op => op.amount === 12000)[0];
+const answer = call('incomeFromOperation_', salary.id);
+check('доход записан в лист «Доходы»', incomesSheet.getLastRow() === incomesBefore + 1,
+  incomesBefore + ' → ' + incomesSheet.getLastRow());
+check('категория подобрана по словарю доходов', answer.category === 'Зарплата',
+  answer.category);
+
+const transfer = pending.filter(op => op.amount === 500)[0];
+call('markOperationNotIncome_', transfer.id);
+check('после ответа повторно не спрашивают',
+  call('pendingIncomeOperations_').length === pendingBefore,
+  pendingBefore + ' vs ' + call('pendingIncomeOperations_').length);
+
 console.log('\n=== Дата начала учёта командой ===');
 
 call('updateSetting_', 'Учёт с', '');
