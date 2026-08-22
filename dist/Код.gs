@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.10.0';
+var BOT_VERSION = '1.10.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -7506,9 +7506,10 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Поступления из выписки попадают в лист «Доходы» — но не молча. По каждому бот спрашивает кнопкой: доход это или перекладывание денег. Зарплата и гонорар — доход, возврат долга и перевод с собственного вклада — нет, и различить их может только человек",
-  "Категорию дохода бот подбирает сам по справочнику «Категории доходов» и показывает прямо на кнопке",
-  "Ответ запоминается: повторно про ту же строку не спросят"
+  "Бот читает выписки Cal. Они устроены не как у остальных: заголовки с переносом строки внутри ячейки, номер карты не в строках, а в шапке и в имени файла, дата списания — одна на весь файл",
+  "Заголовок Cal растянут на все колонки и затекал в примечание каждой строки — теперь такой текст отбрасывается",
+  "«הוראת קבע» распознаётся как постоянное поручение, у рассрочки берётся ежемесячный платёж, а не вся сумма покупки",
+  "Номер платежа («תשלום 3 מתוך 12») входит в ключ строки: без него платёж за следующий месяц считался бы повтором предыдущего и терялся"
 ];
 
 
@@ -7563,7 +7564,10 @@ var STATEMENT_FORMATS_ = [
   },
   {
     source: 'Cal',
-    marker: ['תאריך עסקה', 'שם בית העסק'],
+    // Cal переносит слова внутри ячейки заголовка и пишет название магазина
+    // без определённого артикля. Поэтому заголовки сравниваются после того,
+    // как пробелы и переносы сведены к одному пробелу
+    marker: ['תאריך עסקה'],
     columns: {
       date: ['תאריך עסקה'],
       merchant: ['שם בית העסק', 'שם בית עסק'],
@@ -7603,7 +7607,10 @@ function detectStatementFormat_(rows) {
   var limit = Math.min(rows.length, 30); // шапка ни у кого не длиннее
 
   for (var r = 0; r < limit; r++) {
-    var cells = (rows[r] || []).map(function (cell) { return String(cell == null ? '' : cell).trim(); });
+    var cells = (rows[r] || []).map(function (cell) {
+      // Переносы строк внутри ячейки заголовка — обычное дело у Cal
+      return String(cell == null ? '' : cell).replace(/\s+/g, ' ').trim();
+    });
     if (!cells.join('')) continue;
 
     for (var f = 0; f < STATEMENT_FORMATS_.length; f++) {
@@ -7635,6 +7642,30 @@ function detectStatementFormat_(rows) {
  * Из шапки Isracard достаём номер карты и дату списания: в самих строках
  * их нет, а без карты непонятно, чья это трата.
  */
+function calHeaderHints_(rows, headerRow, fileName) {
+  var hints = { card: '', chargeDate: null };
+
+  // Номер карты Cal не пишет ни в строках, ни всегда в шапке — зато он есть
+  // в имени файла: «פירוט חיובים לכרטיס ויזה 5430 - 22.08.26.xlsx»
+  var haystack = [String(fileName || '')];
+  for (var r = 0; r < headerRow; r++) {
+    haystack.push((rows[r] || []).map(function (c) { return String(c == null ? '' : c); }).join(' '));
+  }
+
+  haystack.forEach(function (line) {
+    if (!hints.card) {
+      var card = line.match(/(?:כרטיס|ויזה|מסטרקארד|מאסטרקארד)[^\d]{0,12}(\d{4})/);
+      if (card && !/^(19|20)\d\d$/.test(card[1])) hints.card = card[1];
+    }
+    if (!hints.chargeDate) {
+      var charge = line.match(/לחיוב\s*ב-?\s*(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/);
+      if (charge) hints.chargeDate = parseStatementDate_(charge[1] + '.' + charge[2] + '.' + charge[3]);
+    }
+  });
+
+  return hints;
+}
+
 function isracardHeaderHints_(rows, headerRow) {
   var hints = { card: '', chargeDay: '' };
 
@@ -7674,6 +7705,16 @@ function parseStatementDate_(value) {
     return new Date(year, Number(m[2]) - 1, Number(m[1]));
   }
   return null;
+}
+
+/**
+ * Примечание к строке: пустое, если это затёкший в колонку текст шапки.
+ */
+function statementNote_(value, headerText) {
+  var note = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!note) return '';
+  if (headerText && headerText.replace(/\s+/g, ' ').indexOf(note) !== -1) return '';
+  return note;
 }
 
 /**
@@ -7755,8 +7796,16 @@ function parseStatement_(rows, fileName) {
 
   var cards = readCards_();
   var knownCards = Object.keys(cards);
+
+  // Cal растягивает заголовок файла на все колонки, и в каждой строке данных
+  // он снова оказывается в графе «примечание». В заметке к покупке такому
+  // тексту не место — отличаем его по совпадению с шапкой
+  var headerText = rows.slice(0, format.headerRow)
+    .map(function (row) { return (row || []).join(' '); }).join(' ');
   var index = format.index;
-  var hints = format.source === 'Isracard' ? isracardHeaderHints_(rows, format.headerRow) : { card: '', chargeDay: '' };
+  var hints = { card: '', chargeDay: '', chargeDate: null };
+  if (format.source === 'Isracard') hints = isracardHeaderHints_(rows, format.headerRow);
+  if (format.source === 'Cal') hints = calHeaderHints_(rows, format.headerRow, fileName);
   var operations = [];
 
   function cell(row, field) {
@@ -7771,7 +7820,7 @@ function parseStatement_(rows, fileName) {
 
     var operation = {
       date: date,
-      chargeDate: parseStatementDate_(cell(row, 'chargeDate')) || null,
+      chargeDate: parseStatementDate_(cell(row, 'chargeDate')) || hints.chargeDate || null,
       source: format.source,
       card: String(cell(row, 'card') || hints.card || '').replace(/\D/g, '').slice(-4),
       merchant: String(cell(row, 'merchant') || '').trim(),
@@ -7780,7 +7829,7 @@ function parseStatement_(rows, fileName) {
       originalCurrency: '',
       kind: 'покупка',
       notTrackable: '',
-      note: String(cell(row, 'note') || '').trim(),
+      note: statementNote_(cell(row, 'note'), headerText),
       file: fileName || ''
     };
 
@@ -7822,6 +7871,7 @@ function parseStatement_(rows, fileName) {
 
       var kindText = String(cell(row, 'kind') || '');
       if (/תשלום|תשלומים|קרדיט|רכישה עתידית/.test(kindText)) operation.kind = 'рассрочка';
+      if (/הוראת קבע/.test(kindText)) operation.kind = 'постоянное поручение';
 
       if (format.source === 'Isracard') {
         var voucher = String(cell(row, 'voucher') || '').replace(/\s/g, '');
@@ -7836,8 +7886,12 @@ function parseStatement_(rows, fileName) {
         }
       } else {
         var prefix = format.source === 'Max' ? 'max:' : 'cal:';
+        // У рассрочки дата покупки и сумма платежа не меняются месяцами:
+        // «תשלום 3 מתוך 12» и «תשלום 4 מתוך 12» различаются только примечанием.
+        // Без него четвёртый платёж посчитался бы повтором третьего
         operation.key = prefix + operation.card + ':' + formatDate_(date) + ':' +
-          operation.merchant + ':' + operation.amount.toFixed(2);
+          operation.merchant + ':' + operation.amount.toFixed(2) +
+          (operation.note ? ':' + operation.note : '');
       }
     }
 

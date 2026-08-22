@@ -97,6 +97,41 @@ check('обычная покупка отмечена покупкой', maxPars
 check('дата списания прочитана', call('formatDate_', maxParsed.operations[1].chargeDate) === '15.06.2026',
   call('formatDate_', maxParsed.operations[1].chargeDate));
 
+console.log('\n=== Выписка Cal ===');
+
+// Cal устроен иначе всех: заголовки с переносом строки внутри ячейки, номер
+// карты только в шапке и в имени файла, а заголовок растянут на все колонки
+// и затекает в графу «примечание» каждой строки
+const NL = String.fromCharCode(10);
+const cal = [
+  ['פירוט עסקאות לחשבון הפועלים 701-502886 לכרטיס ויזה פלטינום המסתיים ב-5430', '', '', '', '', '', ''],
+  ['עסקאות לחיוב ב-10/09/2026: 842.49 ₪', '', '', '', '', '', ''],
+  ['תאריך' + NL + 'עסקה', 'שם בית עסק', 'סכום' + NL + 'עסקה', 'סכום' + NL + 'חיוב',
+   'סוג' + NL + 'עסקה', 'ענף', 'הערות'],
+  [46249, 'סונול דניה', 367.62, 367.62, 'רגילה', 'אנרגיה',
+   'פירוט עסקאות לחשבון הפועלים 701-502886 לכרטיס ויזה פלטינום המסתיים ב-5430'],
+  [46237, 'מנהרות הכרמל-הו"ק', 11.97, 11.97, 'הוראת קבע', 'מוסדות', ''],
+  [46188, 'מועדון כדורגל כרמל חיפה', 5400, 450, 'תשלומים', 'פנאי בילוי', 'תשלום 3 מתוך 12']
+];
+
+const calParsed = call('parseStatement_', cal, 'פירוט חיובים לכרטיס ויזה 5430 - 22.08.26.xlsx');
+check('Cal узнан', calParsed.ok && calParsed.source === 'Cal', calParsed.error || calParsed.source);
+check('строки прочитаны', calParsed.operations.length === 3,
+  String(calParsed.operations && calParsed.operations.length));
+check('номер карты взят из имени файла', calParsed.operations[0].card === '5430',
+  calParsed.operations[0].card);
+check('дата списания взята из шапки',
+  call('formatDate_', calParsed.operations[0].chargeDate) === '10.09.2026',
+  call('formatDate_', calParsed.operations[0].chargeDate));
+check('заголовок не попал в заметку', calParsed.operations[0].note === '',
+  calParsed.operations[0].note.slice(0, 30));
+check('постоянное поручение распознано', calParsed.operations[1].kind === 'постоянное поручение',
+  calParsed.operations[1].kind);
+check('у рассрочки списывается платёж, а не вся сумма',
+  calParsed.operations[2].amount === 450, String(calParsed.operations[2].amount));
+check('номер платежа входит в ключ',
+  calParsed.operations[2].key.indexOf('3 מתוך 12') !== -1, calParsed.operations[2].key);
+
 console.log('\n=== Повторная загрузка того же файла ===');
 
 const first = call('importStatementRows_', isracard, 'isracard.xlsx', 'файл-1');
