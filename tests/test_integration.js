@@ -1509,8 +1509,10 @@ const incomeReport = call('reportIncomes_');
 check('в отчёте по доходам есть сумма', /3 000|3000/.test(incomeReport), incomeReport.slice(0, 120));
 check('в отчёте по доходам есть остаток', /Осталось|Перерасход/.test(incomeReport),
   incomeReport.slice(-120));
+// Отчёт теперь отдаёт и текст, и группы для диаграммы
 const monthReport = call('reportCurrentMonth_');
-check('в месячной сводке появились доходы', /Доходы:/.test(monthReport), monthReport.slice(-160));
+check('в месячной сводке появились доходы', /Доходы:/.test(monthReport.text),
+  monthReport.text.slice(-160));
 
 // 7. Без модели: тот же разбор локальным парсером
 gemini({ text: null });

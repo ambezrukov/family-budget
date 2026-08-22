@@ -81,16 +81,15 @@ function totalOf_(expenses) {
 function reportCurrentMonth_() {
   var now = new Date();
   var expenses = budgetExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
-  if (!expenses.length) return 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.';
+  if (!expenses.length) {
+    return { text: 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.', groups: [] };
+  }
 
   var total = totalOf_(expenses);
   var groups = groupBy_(expenses, 'category');
 
   var lines = ['<b>' + monthTitle_(now) + '</b>', 'Всего: <b>' + formatMoney_(total) + '</b>', ''];
-  groups.forEach(function (group) {
-    var share = total > 0 ? Math.round((group.sum / total) * 100) : 0;
-    lines.push('• ' + escapeHtml_(group.key) + ' — ' + formatMoney_(group.sum) + ' (' + share + '%)');
-  });
+  lines = lines.concat(categoryLines_(groups, total));
   lines.push('');
   lines.push('Записей: ' + expenses.length);
 
@@ -107,7 +106,7 @@ function reportCurrentMonth_() {
       : 'Перерасход: <b>' + formatMoney_(Math.abs(left)) + '</b>');
   }
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), groups: groups };
 }
 
 /**
@@ -148,6 +147,54 @@ function balanceLine_(incomeTotal, expenseTotal) {
     (left >= 0
       ? 'Осталось: <b>' + formatMoney_(left) + '</b>'
       : 'Перерасход: <b>' + formatMoney_(Math.abs(left)) + '</b>');
+}
+
+/**
+ * Расходы за последние семь дней.
+ *
+ * Месяц показывает итог, но пока он не кончился, вопрос обычно другой:
+ * «сколько мы потратили на этой неделе». Неделя считается скользящей —
+ * от сегодняшнего дня назад, а не от понедельника: так ответ не зависит
+ * от того, в какой день его спросили.
+ */
+function reportWeek_() {
+  var now = new Date();
+  var to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  var from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+
+  var expenses = budgetExpenses_({ from: from, to: to });
+  if (!expenses.length) return { text: 'За последние семь дней расходов не записано.', groups: [] };
+
+  var total = totalOf_(expenses);
+  var groups = groupBy_(expenses, 'category');
+
+  var lines = [
+    '<b>Неделя: ' + formatDate_(from) + ' — ' + formatDate_(to) + '</b>',
+    'Всего: <b>' + formatMoney_(total) + '</b>',
+    'В среднем в день: ' + formatMoney_(total / 7),
+    ''
+  ];
+  lines = lines.concat(categoryLines_(groups, total));
+
+  // Сравнение с предыдущей неделей: сама по себе сумма ни о чём не говорит,
+  // а «на треть больше обычного» — уже повод посмотреть, на что
+  var prevTo = new Date(from.getFullYear(), from.getMonth(), from.getDate() - 1, 23, 59, 59);
+  var prevFrom = new Date(prevTo.getFullYear(), prevTo.getMonth(), prevTo.getDate() - 6);
+  var prevTotal = totalOf_(budgetExpenses_({ from: prevFrom, to: prevTo }));
+
+  if (prevTotal > 0) {
+    var diff = total - prevTotal;
+    var percent = Math.round(Math.abs(diff) / prevTotal * 100);
+    lines.push('');
+    lines.push(diff >= 0
+      ? '↗️ На ' + formatMoney_(diff) + ' больше прошлой недели (+' + percent + '%)'
+      : '↘️ На ' + formatMoney_(Math.abs(diff)) + ' меньше прошлой недели (−' + percent + '%)');
+  }
+
+  lines.push('');
+  lines.push('Записей: ' + expenses.length);
+
+  return { text: lines.join('\n'), groups: groups };
 }
 
 /**
@@ -245,7 +292,8 @@ function helpText_() {
     'своими счетами тоже приходят на счёт, но доходом не являются.',
     '',
     '<b>Команды</b>',
-    '/mesyac — расходы за текущий месяц по категориям',
+    '/mesyac — расходы за текущий месяц по категориям, с диаграммой',
+    '/nedelya — расходы за последние семь дней и сравнение с прошлой неделей',
     '/poslednie — последние 10 записей',
     '/segodnya — сумма за сегодня',
     '/dohody — доходы за месяц и сколько осталось',
@@ -396,10 +444,18 @@ function sendMonthlyReport() {
     var report = buildMonthlyReport_(lastMonth);
     var delivered = [];
 
+    // Диаграмму строим один раз на всех: рисовать её каждому адресату —
+    // лишняя работа для таблицы
+    var groups = groupBy_(budgetExpenses_({
+      from: monthStart_(lastMonth), to: monthEnd_(lastMonth)
+    }), 'category');
+    var chart = categoryChartBlob_(groups, 'Расходы за ' + monthTitle_(lastMonth).toLowerCase());
+
     chatIds.forEach(function (chatId) {
       var result = tgSend_(chatId, report);
       if (result && result.ok) delivered.push(chatId);
       else logEvent_('Отчёт не доставлен', { chat: chatId });
+      if (chart) tgSendPhoto_(chatId, chart, 'Расходы по категориям');
     });
 
     logEvent_('Месячный отчёт отправлен', {

@@ -29,6 +29,7 @@
  *   21_Incomes
  *   22_Budget
  *   23_Categorize
+ *   24_Charts
  */
 
 // ===========================================================================
@@ -53,7 +54,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.15.1';
+var BOT_VERSION = '1.16.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1135,6 +1136,37 @@ function tgAnswerCallback_(callbackId, text) {
  * Отправка файла. Нужна, чтобы прислать новый код бота прямо в чат:
  * человеку остаётся открыть его и вставить в редактор.
  */
+/**
+ * Отправляет картинку. Телеграм показывает её прямо в переписке, поэтому
+ * диаграмма видна сразу, без скачивания.
+ */
+function tgSendPhoto_(chatId, blob, caption) {
+  try {
+    var response = UrlFetchApp.fetch(tgApiUrl_('sendPhoto'), {
+      method: 'post',
+      payload: {
+        chat_id: String(chatId),
+        caption: String(caption || '').substring(0, 1000),
+        parse_mode: 'HTML',
+        photo: blob
+      },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      logEvent_('Картинка не отправилась', {
+        code: response.getResponseCode(),
+        body: response.getContentText().substring(0, 500)
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logEvent_('Сбой отправки картинки', String(err));
+    return false;
+  }
+}
+
 function tgSendDocument_(chatId, blob, caption) {
   try {
     var response = UrlFetchApp.fetch(tgApiUrl_('sendDocument'), {
@@ -2683,16 +2715,15 @@ function totalOf_(expenses) {
 function reportCurrentMonth_() {
   var now = new Date();
   var expenses = budgetExpenses_({ from: monthStart_(now), to: monthEnd_(now) });
-  if (!expenses.length) return 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.';
+  if (!expenses.length) {
+    return { text: 'За ' + monthTitle_(now).toLowerCase() + ' записей пока нет.', groups: [] };
+  }
 
   var total = totalOf_(expenses);
   var groups = groupBy_(expenses, 'category');
 
   var lines = ['<b>' + monthTitle_(now) + '</b>', 'Всего: <b>' + formatMoney_(total) + '</b>', ''];
-  groups.forEach(function (group) {
-    var share = total > 0 ? Math.round((group.sum / total) * 100) : 0;
-    lines.push('• ' + escapeHtml_(group.key) + ' — ' + formatMoney_(group.sum) + ' (' + share + '%)');
-  });
+  lines = lines.concat(categoryLines_(groups, total));
   lines.push('');
   lines.push('Записей: ' + expenses.length);
 
@@ -2709,7 +2740,7 @@ function reportCurrentMonth_() {
       : 'Перерасход: <b>' + formatMoney_(Math.abs(left)) + '</b>');
   }
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), groups: groups };
 }
 
 /**
@@ -2750,6 +2781,54 @@ function balanceLine_(incomeTotal, expenseTotal) {
     (left >= 0
       ? 'Осталось: <b>' + formatMoney_(left) + '</b>'
       : 'Перерасход: <b>' + formatMoney_(Math.abs(left)) + '</b>');
+}
+
+/**
+ * Расходы за последние семь дней.
+ *
+ * Месяц показывает итог, но пока он не кончился, вопрос обычно другой:
+ * «сколько мы потратили на этой неделе». Неделя считается скользящей —
+ * от сегодняшнего дня назад, а не от понедельника: так ответ не зависит
+ * от того, в какой день его спросили.
+ */
+function reportWeek_() {
+  var now = new Date();
+  var to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  var from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+
+  var expenses = budgetExpenses_({ from: from, to: to });
+  if (!expenses.length) return { text: 'За последние семь дней расходов не записано.', groups: [] };
+
+  var total = totalOf_(expenses);
+  var groups = groupBy_(expenses, 'category');
+
+  var lines = [
+    '<b>Неделя: ' + formatDate_(from) + ' — ' + formatDate_(to) + '</b>',
+    'Всего: <b>' + formatMoney_(total) + '</b>',
+    'В среднем в день: ' + formatMoney_(total / 7),
+    ''
+  ];
+  lines = lines.concat(categoryLines_(groups, total));
+
+  // Сравнение с предыдущей неделей: сама по себе сумма ни о чём не говорит,
+  // а «на треть больше обычного» — уже повод посмотреть, на что
+  var prevTo = new Date(from.getFullYear(), from.getMonth(), from.getDate() - 1, 23, 59, 59);
+  var prevFrom = new Date(prevTo.getFullYear(), prevTo.getMonth(), prevTo.getDate() - 6);
+  var prevTotal = totalOf_(budgetExpenses_({ from: prevFrom, to: prevTo }));
+
+  if (prevTotal > 0) {
+    var diff = total - prevTotal;
+    var percent = Math.round(Math.abs(diff) / prevTotal * 100);
+    lines.push('');
+    lines.push(diff >= 0
+      ? '↗️ На ' + formatMoney_(diff) + ' больше прошлой недели (+' + percent + '%)'
+      : '↘️ На ' + formatMoney_(Math.abs(diff)) + ' меньше прошлой недели (−' + percent + '%)');
+  }
+
+  lines.push('');
+  lines.push('Записей: ' + expenses.length);
+
+  return { text: lines.join('\n'), groups: groups };
 }
 
 /**
@@ -2847,7 +2926,8 @@ function helpText_() {
     'своими счетами тоже приходят на счёт, но доходом не являются.',
     '',
     '<b>Команды</b>',
-    '/mesyac — расходы за текущий месяц по категориям',
+    '/mesyac — расходы за текущий месяц по категориям, с диаграммой',
+    '/nedelya — расходы за последние семь дней и сравнение с прошлой неделей',
     '/poslednie — последние 10 записей',
     '/segodnya — сумма за сегодня',
     '/dohody — доходы за месяц и сколько осталось',
@@ -2998,10 +3078,18 @@ function sendMonthlyReport() {
     var report = buildMonthlyReport_(lastMonth);
     var delivered = [];
 
+    // Диаграмму строим один раз на всех: рисовать её каждому адресату —
+    // лишняя работа для таблицы
+    var groups = groupBy_(budgetExpenses_({
+      from: monthStart_(lastMonth), to: monthEnd_(lastMonth)
+    }), 'category');
+    var chart = categoryChartBlob_(groups, 'Расходы за ' + monthTitle_(lastMonth).toLowerCase());
+
     chatIds.forEach(function (chatId) {
       var result = tgSend_(chatId, report);
       if (result && result.ok) delivered.push(chatId);
       else logEvent_('Отчёт не доставлен', { chat: chatId });
+      if (chart) tgSendPhoto_(chatId, chart, 'Расходы по категориям');
     });
 
     logEvent_('Месячный отчёт отправлен', {
@@ -3280,7 +3368,14 @@ function handleCommand_(message, text) {
       return;
     case '/mesyac':
     case '/month':
-      tgSend_(chatId, reportCurrentMonth_());
+      var monthReport = reportCurrentMonth_();
+      sendReportWithChart_(chatId, monthReport.text || monthReport,
+        monthReport.groups || [], 'Расходы за месяц');
+      return;
+    case '/nedelya':
+    case '/week':
+      var weekReport = reportWeek_();
+      sendReportWithChart_(chatId, weekReport.text, weekReport.groups, 'Расходы за неделю');
       return;
     case '/poslednie':
     case '/last':
@@ -7766,7 +7861,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "На странице «Бюджет» у трат из выписок вместо кнопки «удалить» показано, откуда они пришли: «Cal · 9926», «Isracard · 8322». Удалять их нечего — это слепок движения по счёту, а поправить можно в таблице"
+  "Появился недельный отчёт: /nedelya. Показывает расходы за последние семь дней, средний расход в день и насколько это больше или меньше прошлой недели. Неделя скользящая — от сегодня назад, а не от понедельника",
+  "В раскладке по категориям теперь видно соотношение: под каждой строкой полоска, рядом доля в процентах",
+  "К отчётам за неделю и месяц бот присылает круговую диаграмму картинкой. Рисует её сама Google Таблица — внешние сервисы не используются, поэтому сломаться тут нечему. Не получилось построить — отчёт всё равно уходит"
 ];
 
 
@@ -10041,4 +10138,115 @@ function handleCategorizeCommand_(message) {
   if (result.left) lines.push('Осталось на следующий заход: ' + result.left);
 
   tgSend_(chatId, lines.join('\n'));
+}
+
+
+// ===========================================================================
+// 24_Charts
+// ===========================================================================
+
+/**
+ * 24_Charts.gs — наглядная раскладка по категориям.
+ *
+ * Два уровня наглядности, и оба нужны.
+ *
+ * Полоски из символов идут прямо в тексте сообщения: они видны сразу, не
+ * требуют загрузки картинки и читаются даже там, где изображения отключены.
+ *
+ * Круговая диаграмма приходит отдельной картинкой. Рисует её сама Google
+ * Таблица: бот создаёт скрытый лист, кладёт туда числа, просит построить
+ * диаграмму и забирает её изображением. Внешние сервисы для этого не нужны —
+ * а значит, ничего не сломается, когда очередной бесплатный сервис закроется.
+ */
+
+var CHART_BARS_ = '▇';
+var CHART_BAR_WIDTH_ = 12;
+
+/**
+ * Полоска под категорию: доля от самой крупной строки списка.
+ */
+function categoryBar_(value, maxValue) {
+  if (!maxValue || value <= 0) return '';
+  var filled = Math.max(1, Math.round((value / maxValue) * CHART_BAR_WIDTH_));
+  var bar = '';
+  for (var i = 0; i < filled; i++) bar += CHART_BARS_;
+  return bar;
+}
+
+/**
+ * Строки раскладки: название, полоска, сумма и доля.
+ */
+function categoryLines_(groups, total) {
+  if (!groups.length) return [];
+  var max = groups[0].sum;
+
+  return groups.map(function (group) {
+    var share = total > 0 ? Math.round((group.sum / total) * 100) : 0;
+    return escapeHtml_(group.key) + ' — <b>' + formatMoney_(group.sum) + '</b>' +
+      (share ? ' · ' + share + '%' : '') + '\n' +
+      '<code>' + categoryBar_(group.sum, max) + '</code>';
+  });
+}
+
+/**
+ * Круговая диаграмма по категориям — изображением.
+ * Возвращает null, если построить не удалось: отчёт должен уйти в любом случае.
+ */
+function categoryChartBlob_(groups, title) {
+  if (!groups || groups.length < 2) return null; // одна категория — не диаграмма
+
+  var ss = getSpreadsheet_();
+  var sheet = null;
+
+  try {
+    sheet = ss.insertSheet('_диаграмма_' + new Date().getTime());
+    sheet.hideSheet();
+
+    // Мелкие категории сводим в «Прочее»: десяток подписей на круге
+    // превращает диаграмму в кашу
+    var top = groups.slice(0, 8);
+    var rest = groups.slice(8).reduce(function (sum, group) { return sum + group.sum; }, 0);
+
+    var rows = [['Категория', 'Сумма']];
+    top.forEach(function (group) { rows.push([group.key, Math.round(group.sum * 100) / 100]); });
+    if (rest > 0) rows.push(['Остальное', Math.round(rest * 100) / 100]);
+
+    sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+
+    var chart = sheet.newChart()
+      .asPieChart()
+      .addRange(sheet.getRange(1, 1, rows.length, 2))
+      .setOption('title', title || 'Расходы по категориям')
+      .setOption('width', 720)
+      .setOption('height', 460)
+      .setOption('pieSliceText', 'percentage')
+      .setOption('legend', { position: 'right', textStyle: { fontSize: 12 } })
+      .build();
+
+    sheet.insertChart(chart);
+    SpreadsheetApp.flush();
+
+    var charts = sheet.getCharts();
+    if (!charts.length) return null;
+
+    return charts[0].getBlob().getAs('image/png').setName('categories.png');
+  } catch (err) {
+    logEvent_('Диаграмма не построилась', String(err));
+    return null;
+  } finally {
+    // Лист временный: остаться в таблице он не должен ни при каком исходе
+    if (sheet) {
+      try { ss.deleteSheet(sheet); } catch (err2) { /* уже удалён */ }
+    }
+  }
+}
+
+/**
+ * Отправляет отчёт с диаграммой: текст, затем картинка.
+ */
+function sendReportWithChart_(chatId, text, groups, title) {
+  tgSend_(chatId, text);
+
+  var blob = categoryChartBlob_(groups, title);
+  if (blob) tgSendPhoto_(chatId, blob, title);
 }

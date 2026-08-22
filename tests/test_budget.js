@@ -143,7 +143,33 @@ check('разобранные магазины больше не в очеред
 console.log('\n=== Отчёт за месяц ===');
 
 const report = call('reportCurrentMonth_');
-check('отчёт строится', typeof report === 'string' && report.length > 0);
+check('месячный отчёт строится', report && report.text.length > 0 && report.groups.length > 0,
+  report ? String(report.groups.length) : 'пусто');
+check('в отчёте есть полоски категорий', /▇/.test(report.text));
+
+const week = call('reportWeek_');
+check('недельный отчёт строится', week && week.text.length > 0, week ? 'ок' : 'пусто');
+check('в неделе виден средний расход в день', /В среднем в день/.test(week.text));
+
+console.log('\n=== Диаграмма ===');
+
+// Полоски рисуются всегда: они не зависят ни от картинок, ни от сети
+const bars = call('categoryLines_', [
+  { key: 'Продукты', sum: 1000, count: 3 },
+  { key: 'Транспорт', sum: 250, count: 2 }
+], 1250);
+check('полоски построены', bars.length === 2 && /▇/.test(bars[0]), JSON.stringify(bars[0]));
+check('у крупной категории полоска длиннее',
+  (bars[0].match(/▇/g) || []).length > (bars[1].match(/▇/g) || []).length,
+  (bars[0].match(/▇/g) || []).length + ' vs ' + (bars[1].match(/▇/g) || []).length);
+check('доля посчитана', /80%/.test(bars[0]), bars[0]);
+
+// Картинку рисует настоящая Google Таблица; в эмуляции графики нет — и это
+// не должно ломать отчёт
+const blob = call('categoryChartBlob_', [
+  { key: 'Продукты', sum: 1000 }, { key: 'Транспорт', sum: 250 }
+], 'Проверка');
+check('без графики отчёт не падает', blob === null, String(blob));
 
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

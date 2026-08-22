@@ -81,6 +81,37 @@ function tgAnswerCallback_(callbackId, text) {
  * Отправка файла. Нужна, чтобы прислать новый код бота прямо в чат:
  * человеку остаётся открыть его и вставить в редактор.
  */
+/**
+ * Отправляет картинку. Телеграм показывает её прямо в переписке, поэтому
+ * диаграмма видна сразу, без скачивания.
+ */
+function tgSendPhoto_(chatId, blob, caption) {
+  try {
+    var response = UrlFetchApp.fetch(tgApiUrl_('sendPhoto'), {
+      method: 'post',
+      payload: {
+        chat_id: String(chatId),
+        caption: String(caption || '').substring(0, 1000),
+        parse_mode: 'HTML',
+        photo: blob
+      },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      logEvent_('Картинка не отправилась', {
+        code: response.getResponseCode(),
+        body: response.getContentText().substring(0, 500)
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logEvent_('Сбой отправки картинки', String(err));
+    return false;
+  }
+}
+
 function tgSendDocument_(chatId, blob, caption) {
   try {
     var response = UrlFetchApp.fetch(tgApiUrl_('sendDocument'), {
