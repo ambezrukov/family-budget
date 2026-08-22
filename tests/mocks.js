@@ -84,6 +84,7 @@ class Sheet {
     return new Range(this, 1, 1, Math.max(rows, 1), cols);
   }
   appendRow(values) { this.data[this.getLastRow()] = values.slice(); return this; }
+  deleteRow(position) { this.data.splice(position - 1, 1); return this; }
   setColumnWidth() { return this; }
   setFrozenRows() { return this; }
 }

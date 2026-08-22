@@ -186,10 +186,20 @@ function statementCurrency_(value) {
  */
 function isCardSettlement_(operation, reference, knownCards) {
   var text = String(operation || '');
-  var byName = /מסטרקרד|מסטרקארד|ויזה|דירקט|ישראכרט|כאל|מקס|max|לאומי קארד/i.test(text);
   var digits = String(reference || '').replace(/\D/g, '');
+
+  // Названия, за которыми стоит карточная компания целиком: банк списывает
+  // одной строкой всё, что накопилось за месяц. Номера карты в такой строке
+  // может и не быть — «כרטיסי אשראי» (кредитные карты) или «מקס איט פיננסי»
+  // (расчётный центр Max) говорят сами за себя
+  var byIssuer = /כרטיסי אשראי|מקס איט|כאל|ישראכרט|לאומי קארד|דיינרס|אמריקן אקספרס|cal|isracard/i.test(text);
+  if (byIssuer) return true;
+
+  // Названия видов карт менее однозначны: «ויזה» встречается и в названии
+  // магазина. Здесь требуем ещё и четыре цифры в графе «אסמכתא»
+  var byCardName = /מסטרקרד|מסטרקארד|ויזה|דירקט|מקס|max/i.test(text);
   var byCard = digits.length === 4 && knownCards.indexOf(digits) !== -1;
-  return byName && (byCard || digits.length === 4);
+  return byCardName && (byCard || digits.length === 4);
 }
 
 /**
@@ -335,9 +345,14 @@ function parseStatement_(rows, fileName) {
  * Дата, раньше которой импортировать нечего: до неё бюджет просто не вели.
  */
 function accountingStartDate_() {
-  var raw = String(setting_('Учёт с', '')).trim();
-  if (!raw) return null;
-  return parseStatementDate_(raw);
+  var raw = setting_('Учёт с', '');
+  // Таблица распознаёт «15.08.2026» как дату и хранит её объектом, а не
+  // текстом. Строковый разбор на таком значении молча возвращал пустоту,
+  // и в бюджет уезжали июльские строки
+  if (Object.prototype.toString.call(raw) === '[object Date]') return raw;
+  var text = String(raw == null ? '' : raw).trim();
+  if (!text) return null;
+  return parseStatementDate_(text);
 }
 
 /**

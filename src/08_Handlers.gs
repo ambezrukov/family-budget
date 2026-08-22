@@ -1558,6 +1558,22 @@ function handleCallback_(callback) {
     return;
   }
 
+  // Убрать строки выписок, попавшие раньше начала учёта
+  if (data === 'dropold') {
+    var removed = dropOperationsBefore_(accountingStartDate_());
+    tgAnswerCallback_(callback.id, removed ? 'Убрал ' + removed : 'Нечего убирать');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n🧹 Удалено строк: ' + removed, []);
+    return;
+  }
+
+  if (data === 'keepold') {
+    tgAnswerCallback_(callback.id, 'Оставил');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\nОставил как есть', []);
+    return;
+  }
+
   // Склейка строки выписки с ручной записью
   if (data.indexOf('mg:') === 0) {
     var parts = data.substring(3).split(':');

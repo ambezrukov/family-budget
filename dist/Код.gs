@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.9.1';
+var BOT_VERSION = '1.9.2';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -4617,6 +4617,22 @@ function handleCallback_(callback) {
     return;
   }
 
+  // Убрать строки выписок, попавшие раньше начала учёта
+  if (data === 'dropold') {
+    var removed = dropOperationsBefore_(accountingStartDate_());
+    tgAnswerCallback_(callback.id, removed ? 'Убрал ' + removed : 'Нечего убирать');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\n🧹 Удалено строк: ' + removed, []);
+    return;
+  }
+
+  if (data === 'keepold') {
+    tgAnswerCallback_(callback.id, 'Оставил');
+    tgEditText_(chatId, messageId,
+      escapeHtml_(String(message.text || '')) + '\n\nОставил как есть', []);
+    return;
+  }
+
   // Склейка строки выписки с ручной записью
   if (data.indexOf('mg:') === 0) {
     var parts = data.substring(3).split(':');
@@ -7467,10 +7483,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Смена модели стала полностью автоматической. Когда у модели кончается дневной запас, бот запоминает это до полуночи и больше её не трогает, а работает на следующей — перебирая от новых к старым",
-  "Сработавшую модель он закрепляет в настройках, чтобы следующий чек не начинался с ожидания впустую",
-  "Наутро, когда лимит обновляется, бот сам возвращается на прежнюю модель",
-  "Команда /model осталась, но теперь она для любопытства и ручных случаев, а не для того, чтобы чинить бота руками"
+  "Отсечка по дате начала учёта заработала. Таблица хранит «15.08.2026» как настоящую дату, а не текст, и разбор её не понимал — из-за этого в бюджет уехали июльские строки первой же выписки",
+  "Платежи карточным компаниям в банковской выписке распознаются и без номера карты: «כרטיסי אשראי», «מקס איט פיננסי», «כאל» — это перевод денег своей же карте, а не трата. Раньше такие строки удваивали расходы",
+  "Команда /uchet, увидев в «Операциях» строки старше отсечки, предлагает кнопкой их убрать"
 ];
 
 
@@ -7666,10 +7681,20 @@ function statementCurrency_(value) {
  */
 function isCardSettlement_(operation, reference, knownCards) {
   var text = String(operation || '');
-  var byName = /מסטרקרד|מסטרקארד|ויזה|דירקט|ישראכרט|כאל|מקס|max|לאומי קארד/i.test(text);
   var digits = String(reference || '').replace(/\D/g, '');
+
+  // Названия, за которыми стоит карточная компания целиком: банк списывает
+  // одной строкой всё, что накопилось за месяц. Номера карты в такой строке
+  // может и не быть — «כרטיסי אשראי» (кредитные карты) или «מקס איט פיננסי»
+  // (расчётный центр Max) говорят сами за себя
+  var byIssuer = /כרטיסי אשראי|מקס איט|כאל|ישראכרט|לאומי קארד|דיינרס|אמריקן אקספרס|cal|isracard/i.test(text);
+  if (byIssuer) return true;
+
+  // Названия видов карт менее однозначны: «ויזה» встречается и в названии
+  // магазина. Здесь требуем ещё и четыре цифры в графе «אסמכתא»
+  var byCardName = /מסטרקרד|מסטרקארד|ויזה|דירקט|מקס|max/i.test(text);
   var byCard = digits.length === 4 && knownCards.indexOf(digits) !== -1;
-  return byName && (byCard || digits.length === 4);
+  return byCardName && (byCard || digits.length === 4);
 }
 
 /**
@@ -7815,9 +7840,14 @@ function parseStatement_(rows, fileName) {
  * Дата, раньше которой импортировать нечего: до неё бюджет просто не вели.
  */
 function accountingStartDate_() {
-  var raw = String(setting_('Учёт с', '')).trim();
-  if (!raw) return null;
-  return parseStatementDate_(raw);
+  var raw = setting_('Учёт с', '');
+  // Таблица распознаёт «15.08.2026» как дату и хранит её объектом, а не
+  // текстом. Строковый разбор на таком значении молча возвращал пустоту,
+  // и в бюджет уезжали июльские строки
+  if (Object.prototype.toString.call(raw) === '[object Date]') return raw;
+  var text = String(raw == null ? '' : raw).trim();
+  if (!text) return null;
+  return parseStatementDate_(text);
 }
 
 /**
@@ -8364,6 +8394,52 @@ function keepOperationSeparate_(operationId) {
   return false;
 }
 
+/**
+ * Удаляет строки выписок, которые старше даты начала учёта.
+ *
+ * Нужно, когда отсечка задана задним числом или, как 22.08.2026, не сработала
+ * из-за формата даты: лишние строки уже в таблице, а руками выбирать их среди
+ * сотни неудобно.
+ */
+function dropOperationsBefore_(date) {
+  if (!date) return 0;
+
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var dates = sheet.getRange(2, 1, last - 1, 1).getValues();
+  var doomed = [];
+  for (var i = 0; i < dates.length; i++) {
+    var value = dates[i][0];
+    if (value && Object.prototype.toString.call(value) === '[object Date]' && value < date) {
+      doomed.push(i + 2);
+    }
+  }
+
+  // Удаляем снизу вверх, иначе номера строк съезжают по ходу дела
+  for (var d = doomed.length - 1; d >= 0; d--) sheet.deleteRow(doomed[d]);
+
+  if (doomed.length) {
+    logEvent_('Удалены строки раньше начала учёта', { строк: doomed.length, дата: formatDate_(date) });
+  }
+  return doomed.length;
+}
+
+/**
+ * Сколько строк в «Операциях» старше даты.
+ */
+function countOperationsBefore_(date) {
+  if (!date) return 0;
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  return sheet.getRange(2, 1, last - 1, 1).getValues().filter(function (row) {
+    return row[0] && Object.prototype.toString.call(row[0]) === '[object Date]' && row[0] < date;
+  }).length;
+}
+
 
 // ===========================================================================
 // 19_Directories
@@ -8483,8 +8559,22 @@ function handleAccountingStart_(message, text) {
 
   updateSetting_('Учёт с', formatDate_(date));
   logEvent_('Задана дата начала учёта', { дата: formatDate_(date) });
-  tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
-    'импортироваться не будут.');
+
+  var older = countOperationsBefore_(date);
+  if (!older) {
+    tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
+      'импортироваться не будут.');
+    return;
+  }
+
+  // Строки могли попасть раньше — например, когда отсечка ещё не работала.
+  // Удалять молча нельзя: вдруг они там нужны
+  tgSend_(chatId, 'Готово, отсечка стоит на <b>' + formatDate_(date) + '</b>.\n\n' +
+    'В листе «Операции» уже лежит строк раньше этой даты: <b>' + older + '</b>. Убрать их?',
+    [[
+      { text: 'Убрать ' + older, callback_data: 'dropold' },
+      { text: 'Оставить', callback_data: 'keepold' }
+    ]]);
 }
 
 /**

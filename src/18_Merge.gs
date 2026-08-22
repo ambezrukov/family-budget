@@ -139,3 +139,49 @@ function keepOperationSeparate_(operationId) {
   }
   return false;
 }
+
+/**
+ * Удаляет строки выписок, которые старше даты начала учёта.
+ *
+ * Нужно, когда отсечка задана задним числом или, как 22.08.2026, не сработала
+ * из-за формата даты: лишние строки уже в таблице, а руками выбирать их среди
+ * сотни неудобно.
+ */
+function dropOperationsBefore_(date) {
+  if (!date) return 0;
+
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var dates = sheet.getRange(2, 1, last - 1, 1).getValues();
+  var doomed = [];
+  for (var i = 0; i < dates.length; i++) {
+    var value = dates[i][0];
+    if (value && Object.prototype.toString.call(value) === '[object Date]' && value < date) {
+      doomed.push(i + 2);
+    }
+  }
+
+  // Удаляем снизу вверх, иначе номера строк съезжают по ходу дела
+  for (var d = doomed.length - 1; d >= 0; d--) sheet.deleteRow(doomed[d]);
+
+  if (doomed.length) {
+    logEvent_('Удалены строки раньше начала учёта', { строк: doomed.length, дата: formatDate_(date) });
+  }
+  return doomed.length;
+}
+
+/**
+ * Сколько строк в «Операциях» старше даты.
+ */
+function countOperationsBefore_(date) {
+  if (!date) return 0;
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  return sheet.getRange(2, 1, last - 1, 1).getValues().filter(function (row) {
+    return row[0] && Object.prototype.toString.call(row[0]) === '[object Date]' && row[0] < date;
+  }).length;
+}

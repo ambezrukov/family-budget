@@ -205,6 +205,49 @@ check('карты источника связаны с реестром',
   sources[0].cards.length === 2 && sources[0].cards[1].owner === 'Анатолий',
   JSON.stringify(sources[0].cards));
 
+console.log('\n=== Отсечка работает и когда дата хранится датой ===');
+
+// Таблица распознаёт «15.08.2026» как дату и хранит объектом. На таком
+// значении строковый разбор молчал, и 22.08.2026 в бюджет уехали июльские
+// строки банковской выписки
+call('updateSetting_', 'Учёт с', new Date(2026, 7, 15));
+const parsedStart = call('accountingStartDate_');
+check('дата-объект понята', parsedStart && call('formatDate_', parsedStart) === '15.08.2026',
+  parsedStart ? call('formatDate_', parsedStart) : 'null');
+
+const julyRows = [
+  ['תאריך', 'הפעולה', 'פרטים', 'אסמכתא', 'חובה', 'זכות', "יתרה בש''ח", 'תאריך ערך'],
+  ['2026-07-27', 'דירקט- מצטבר', '', '9189', '353.30', '', '1', '2026-07-27'],
+  ['2026-08-20', 'סופר', '', '111', '48', '', '1', '2026-08-20']
+];
+const cut = call('importStatementRows_', julyRows, 'банк-июль.csv', 'файл-июль');
+check('июльская строка отсечена', cut.stats.skipped === 1, String(cut.stats.skipped));
+check('августовская записана', cut.stats.added === 1, String(cut.stats.added));
+
+console.log('\n=== Списания карточным компаниям ===');
+
+const issuerRows = [
+  ['תאריך', 'הפעולה', 'פרטים', 'אסמכתא', 'חובה', 'זכות', "יתרה בש''ח", 'תאריך ערך'],
+  ['2026-08-16', 'כרטיסי אשראי ל', '', '', '7215.37', '', '1', '2026-08-16'],
+  ['2026-08-16', 'מקס איט פיננסי', '', '', '125', '', '1', '2026-08-16'],
+  ['2026-08-16', 'שיק', '', '77', '7000', '', '1', '2026-08-16']
+];
+const issuers = call('parseStatement_', issuerRows, 'банк-эмитенты.csv');
+check('«כרטיסי אשראי» — не трата', issuers.operations[0].notTrackable === 'да',
+  issuers.operations[0].notTrackable + '/' + issuers.operations[0].kind);
+check('«מקס איט פיננסי» — не трата', issuers.operations[1].notTrackable === 'да',
+  issuers.operations[1].notTrackable + '/' + issuers.operations[1].kind);
+check('выписанный чек остался тратой', issuers.operations[2].notTrackable === '',
+  issuers.operations[2].notTrackable);
+
+console.log('\n=== Уборка строк раньше отсечки ===');
+
+const cleaned = call('dropOperationsBefore_', new Date(2026, 7, 15));
+check('лишние строки удалены', cleaned >= 1, String(cleaned));
+check('после уборки старых не осталось',
+  call('countOperationsBefore_', new Date(2026, 7, 15)) === 0,
+  String(call('countOperationsBefore_', new Date(2026, 7, 15))));
+
 console.log('\n=== Дата начала учёта командой ===');
 
 call('updateSetting_', 'Учёт с', '');

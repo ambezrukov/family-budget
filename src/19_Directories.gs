@@ -112,8 +112,22 @@ function handleAccountingStart_(message, text) {
 
   updateSetting_('Учёт с', formatDate_(date));
   logEvent_('Задана дата начала учёта', { дата: formatDate_(date) });
-  tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
-    'импортироваться не будут.');
+
+  var older = countOperationsBefore_(date);
+  if (!older) {
+    tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
+      'импортироваться не будут.');
+    return;
+  }
+
+  // Строки могли попасть раньше — например, когда отсечка ещё не работала.
+  // Удалять молча нельзя: вдруг они там нужны
+  tgSend_(chatId, 'Готово, отсечка стоит на <b>' + formatDate_(date) + '</b>.\n\n' +
+    'В листе «Операции» уже лежит строк раньше этой даты: <b>' + older + '</b>. Убрать их?',
+    [[
+      { text: 'Убрать ' + older, callback_data: 'dropold' },
+      { text: 'Оставить', callback_data: 'keepold' }
+    ]]);
 }
 
 /**
