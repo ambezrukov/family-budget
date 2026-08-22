@@ -119,7 +119,11 @@ function handleStatementDocument_(message, document) {
   var chatId = message.chat.id;
   var fileName = String(document.file_name || 'выписка');
 
+  // Разбор большой выписки занимает секунды, и всё это время человек смотрит
+  // в пустой чат. Лучше сразу сказать, что файл взят в работу
   tgSendChatAction_(chatId, 'typing');
+  tgSend_(chatId, 'Взял <b>' + escapeHtml_(fileName) + '</b>, читаю…');
+
   var file = tgDownloadFile_(document.file_id);
   if (!file) {
     tgSend_(chatId, 'Не смог забрать файл. Пришлите ещё раз или положите его в папку «Выписки» на Диске.');

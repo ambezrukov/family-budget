@@ -316,9 +316,14 @@ function parseStatement_(rows, fileName) {
     var known = cards[operation.card];
     operation.owner = known ? known.owner : '';
 
-    var guess = categorize_(operation.merchant, operation.merchant);
-    operation.category = operation.notTrackable ? '' : guess.category;
-    operation.subcategory = operation.notTrackable ? '' : guess.subcategory;
+    // Категорию берём ТОЛЬКО из словаря. Обращаться к модели по каждой строке
+    // нельзя: в банковской выписке их полторы сотни, и бесплатный лимит
+    // Gemini кончается на середине файла — импорт молча умирает
+    var guess = operation.notTrackable
+      ? null
+      : categorizeByDictionary_(String(operation.merchant || '').toLowerCase());
+    operation.category = guess ? guess.category : '';
+    operation.subcategory = guess ? guess.subcategory : '';
 
     operations.push(operation);
   }

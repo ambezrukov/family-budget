@@ -107,6 +107,17 @@ const again = call('importStatementRows_', isracard, 'isracard.xlsx', 'файл-
 check('повтор ничего не добавил', again.stats.added === 0, String(again.stats.added));
 check('повторы посчитаны', again.stats.dupes === 2, String(again.stats.dupes));
 
+console.log('\n=== Импорт не дёргает модель ===');
+
+// В банковской выписке полторы сотни строк. Если на каждую спрашивать
+// категорию у Gemini, бесплатный лимит кончается на середине файла и импорт
+// умирает молча — именно это случилось 22.08.2026 на первой же выписке.
+const askedBefore = M.httpLog.filter(r => String(r.url).indexOf('generativelanguage') !== -1).length;
+call('importStatementRows_', bankExcel, 'банк-повтор.xlsx', 'файл-модель');
+const askedAfter = M.httpLog.filter(r => String(r.url).indexOf('generativelanguage') !== -1).length;
+check('к модели не обращались', askedAfter === askedBefore,
+  'запросов: ' + (askedAfter - askedBefore));
+
 console.log('\n=== Учёт ведём не с начала времён ===');
 
 call('updateSetting_', 'Учёт с', '01.06.2026');

@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.8.1';
+var BOT_VERSION = '1.8.2';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -7377,8 +7377,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Настройки, появившиеся в новых версиях, дописываются в уже существующий лист «Настройки». Раньше их видел только тот, кто заводил таблицу с нуля, и строка «Учёт с» просто не появлялась",
-  "Дату начала учёта можно задать из чата: /uchet 15.08.2026. «/uchet» без даты покажет текущую, «/uchet сброс» снимет отсечку"
+  "Импорт выписок больше не спрашивает категорию у модели по каждой строке. На банковской выписке это давало полторы сотни запросов подряд, упиралось в дневной лимит Gemini и обрывало разбор молча, без единого сообщения",
+  "Категории при импорте берутся из словаря на листе «Категории»; строки, которых словарь не знает, остаются без категории — их разложим отдельно",
+  "Получив файл, бот сразу пишет «взял, читаю»: раньше во время разбора чат молчал, и было непонятно, дошёл ли файл вообще"
 ];
 
 
@@ -7704,9 +7705,14 @@ function parseStatement_(rows, fileName) {
     var known = cards[operation.card];
     operation.owner = known ? known.owner : '';
 
-    var guess = categorize_(operation.merchant, operation.merchant);
-    operation.category = operation.notTrackable ? '' : guess.category;
-    operation.subcategory = operation.notTrackable ? '' : guess.subcategory;
+    // Категорию берём ТОЛЬКО из словаря. Обращаться к модели по каждой строке
+    // нельзя: в банковской выписке их полторы сотни, и бесплатный лимит
+    // Gemini кончается на середине файла — импорт молча умирает
+    var guess = operation.notTrackable
+      ? null
+      : categorizeByDictionary_(String(operation.merchant || '').toLowerCase());
+    operation.category = guess ? guess.category : '';
+    operation.subcategory = guess ? guess.subcategory : '';
 
     operations.push(operation);
   }
@@ -7963,7 +7969,11 @@ function handleStatementDocument_(message, document) {
   var chatId = message.chat.id;
   var fileName = String(document.file_name || 'выписка');
 
+  // Разбор большой выписки занимает секунды, и всё это время человек смотрит
+  // в пустой чат. Лучше сразу сказать, что файл взят в работу
   tgSendChatAction_(chatId, 'typing');
+  tgSend_(chatId, 'Взял <b>' + escapeHtml_(fileName) + '</b>, читаю…');
+
   var file = tgDownloadFile_(document.file_id);
   if (!file) {
     tgSend_(chatId, 'Не смог забрать файл. Пришлите ещё раз или положите его в папку «Выписки» на Диске.');
