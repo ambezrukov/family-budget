@@ -529,6 +529,22 @@ check('основную пробовали несколько раз',
   modelsAsked.filter(u => !/flash-lite/.test(u)).length >= 3,
   'попыток: ' + modelsAsked.filter(u => !/flash-lite/.test(u)).length);
 
+// Занята бывает не одна модель, а всё поколение сразу. Тогда бот спускается
+// к тому, что есть в каталоге ключа, — иначе чек теряется на ровном месте.
+const modelsTried = [];
+gemini({ receipt: (payload, url) => {
+  modelsTried.push(String(url));
+  return /2\.5-pro/.test(String(url))
+    ? { receipts: [{ total: 17, currency: 'ILS', datetime: '', store: 'Старая модель',
+        category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: '' }] }
+    : null;
+} });
+const beforeOlder = rowsCount();
+post({ message: msg({ document: { file_id: 'doc5', mime_type: 'application/pdf' } }) });
+check('чек дочитан моделью из каталога', rowsCount() === beforeOlder + 1,
+  'добавлено: ' + (rowsCount() - beforeOlder));
+check('до каталога дошли', modelsTried.some(u => /2\.5-pro/.test(u)));
+
 const beforeZip = rowsCount();
 post({ message: msg({ document: { file_id: 'doc3', mime_type: 'application/zip' } }) });
 check('неподходящий файл не записан', rowsCount() === beforeZip);

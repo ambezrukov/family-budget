@@ -14,6 +14,11 @@ var GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/'
 // ответа человеку: в первом случае помогает просто повторить через минуту.
 var GEMINI_BUSY_ = false;
 
+// Сколько всего времени отводим на один разбор со всеми повторами и сменой
+// моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
+// запись расхода с ответом — поэтому берём меньше половины.
+var GEMINI_TIME_BUDGET_MS = 150000;
+
 /**
  * Низкоуровневый вызов модели.
  *
@@ -45,18 +50,24 @@ function geminiJson_(options) {
     body.systemInstruction = { parts: [{ text: options.systemInstruction }] };
   }
 
+  var started = new Date().getTime();
   var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
-  var raw = geminiFetchWithRetry_(url, body, options.attempts);
+  var raw = geminiFetchWithRetry_(url, body, options.attempts, started);
 
-  // Перегружена бывает конкретная модель, а не весь Google. Вторая свободна
-  // чаще, чем занята, — пробуем её, прежде чем сдаваться.
+  // Перегружена бывает не «вся Gemini», а конкретная модель — причём
+  // соседняя версия того же поколения обычно занята заодно с ней. Поэтому
+  // спускаемся по списку доступных моделей, пока кто-нибудь не ответит.
   if (!raw && GEMINI_BUSY_ && !options.noFallback) {
-    var spare = spareModel_(options.model);
-    if (spare) {
-      logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spare });
+    var spares = spareModels_(options.model);
+    for (var i = 0; i < spares.length && !raw; i++) {
+      if (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS) {
+        logEvent_('Перебор моделей остановлен по времени', { осталось: spares.slice(i).join(', ') });
+        break;
+      }
+      logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spares[i] });
       raw = geminiFetchWithRetry_(
-        GEMINI_ENDPOINT + encodeURIComponent(spare) + ':generateContent?key=' + encodeURIComponent(key),
-        body, 3);
+        GEMINI_ENDPOINT + encodeURIComponent(spares[i]) + ':generateContent?key=' + encodeURIComponent(key),
+        body, 2, started);
     }
   }
 
@@ -84,15 +95,29 @@ function geminiJson_(options) {
 }
 
 /**
- * Вторая модель на случай, когда первая занята. Медиа и текст в настройках
- * разные, поэтому подменять достаточно одну другой.
+ * Очередь моделей на случай, когда основная занята.
+ *
+ * Сначала вторая настроенная (она под рукой и точно рабочая), затем — модели
+ * прошлых поколений из каталога ключа: 22.08.2026 всё семейство 3.x стояло
+ * в очереди целиком, а спрос на 2.x давно спал.
  */
-function spareModel_(model) {
-  var candidates = [modelForMedia_(), modelForText_(), GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT];
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i] && candidates[i] !== model) return candidates[i];
-  }
-  return '';
+function spareModels_(model) {
+  var queue = [modelForMedia_(), modelForText_(), GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT];
+
+  var ranked = rankModels_(availableGeminiModels_(), 'media');
+  var older = ranked.filter(function (name) {
+    return queue.indexOf(name) === -1 && name !== model;
+  });
+  // Список отсортирован от новых к старым, а нужен обратный порядок:
+  // старое поколение реже перегружено, чем то, куда все только перешли
+  queue = queue.concat(older.reverse());
+
+  var seen = {};
+  return queue.filter(function (name) {
+    if (!name || name === model || seen[name]) return false;
+    seen[name] = true;
+    return true;
+  }).slice(0, 4);
 }
 
 /**
@@ -101,10 +126,17 @@ function spareModel_(model) {
  * до полуминуты суммарно: 22.08.2026 чек не прочитался только потому, что
  * трёх попыток за четыре секунды не хватило переждать всплеск спроса.
  */
-function geminiFetchWithRetry_(url, body, attempts) {
-  var delays = [0, 2000, 5000, 12000, 20000].slice(0, attempts || 5);
+function geminiFetchWithRetry_(url, body, attempts, startedAt) {
+  var delays = [0, 1500, 4000, 8000, 15000].slice(0, attempts || 5);
+  var started = startedAt || new Date().getTime();
   var busy = false;
   for (var attempt = 0; attempt < delays.length; attempt++) {
+    // Сам запрос в часы пик висит по полминуты, поэтому следим не за числом
+    // попыток, а за общим временем: человек ждёт ответа в чате
+    if (attempt && new Date().getTime() - started > GEMINI_TIME_BUDGET_MS) {
+      logEvent_('Повторы прекращены по времени', { попыток: attempt });
+      break;
+    }
     if (delays[attempt]) Utilities.sleep(delays[attempt]);
     try {
       var response = UrlFetchApp.fetch(url, {
