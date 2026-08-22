@@ -45,7 +45,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.5.6';
+var BOT_VERSION = '1.5.7';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -5739,6 +5739,11 @@ function fetchLink_(url) {
         }
       });
     } catch (err) {
+      var afterError = fetchViaProxy_(current);
+      if (afterError) {
+        logEvent_('Чек взят через посредника', { url: current, причина: String(err) });
+        return afterError;
+      }
       logEvent_('Ссылка не открылась', { url: current, error: String(err) });
       return null;
     }
@@ -5757,6 +5762,11 @@ function fetchLink_(url) {
     }
 
     if (code !== 200) {
+      var viaProxy = fetchViaProxy_(current);
+      if (viaProxy) {
+        logEvent_('Чек взят через посредника', { url: current, отказ: code });
+        return viaProxy;
+      }
       logEvent_('Сайт отказал', { url: current, code: code });
       return null;
     }
@@ -5771,6 +5781,100 @@ function fetchLink_(url) {
 
   logEvent_('Слишком много перенаправлений', { url: url });
   return null;
+}
+
+/**
+ * Адрес посредника на Vercel. Отдельного свойства обычно нет: посредник и
+ * мини-приложение живут одним проектом, поэтому берём тот же адрес.
+ */
+function proxyBaseUrl_() {
+  var url = String(scriptProp_('PROXY_URL') || scriptProp_('MINIAPP_URL') || '').trim();
+  return url ? url.replace(/\/+$/, '') : '';
+}
+
+/**
+ * Второй заход за страницей — через посредника.
+ *
+ * Некоторые сети закрываются от серверных запросов: «Рами Леви» отвечает
+ * Apps Script кодом 403, хотя с домашнего адреса та же страница открывается.
+ * Посредник на Vercel живёт в другом облаке, и для таких сайтов выглядит
+ * иначе, поэтому чек через него доходит.
+ *
+ * Возвращает такой же объект, как fetchLink_, — с ответом, у которого есть
+ * привычные getContentText и getBlob, чтобы дальше код ничего не различал.
+ */
+function fetchViaProxy_(url) {
+  var base = proxyBaseUrl_();
+  if (!base) return null;
+
+  var options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ url: String(url) }),
+    muteHttpExceptions: true
+  };
+
+  var secret = scriptProp_(PROP_WEBHOOK_SECRET);
+  if (secret) options.headers = { 'X-Proxy-Secret': secret };
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch(base + '/api/fetch', options);
+  } catch (err) {
+    logEvent_('Посредник не ответил', { url: url, error: String(err) });
+    return null;
+  }
+
+  if (response.getResponseCode() !== 200) {
+    logEvent_('Посредник не отдал страницу', { url: url, code: response.getResponseCode() });
+    return null;
+  }
+
+  var data;
+  try {
+    data = JSON.parse(response.getContentText());
+  } catch (err) {
+    logEvent_('Посредник ответил не таблицей', { url: url });
+    return null;
+  }
+
+  if (!data || !data.ok) {
+    logEvent_('Посредник не отдал страницу', { url: url, error: data && data.error });
+    return null;
+  }
+
+  return {
+    url: String(data.url || url),
+    code: 200,
+    contentType: String(data.contentType || '').toLowerCase(),
+    response: proxyPageResponse_(data)
+  };
+}
+
+/**
+ * Ответ посредника в том виде, в каком его ждёт остальной код: текст страницы
+ * приходит строкой, PDF и картинки — закодированными, и разворачиваются
+ * обратно только если понадобятся.
+ */
+function proxyPageResponse_(data) {
+  var contentType = String(data.contentType || 'text/html');
+
+  function blob() {
+    if (data.base64) {
+      return Utilities.newBlob(Utilities.base64Decode(data.base64), contentType.split(';')[0], 'receipt');
+    }
+    return Utilities.newBlob(String(data.body || ''), contentType.split(';')[0], 'receipt');
+  }
+
+  return {
+    getResponseCode: function () { return Number(data.status) || 200; },
+    getContentText: function () {
+      if (typeof data.body === 'string') return data.body;
+      return data.base64 ? blob().getDataAsString() : '';
+    },
+    getHeaders: function () { return { 'Content-Type': contentType }; },
+    getBlob: blob
+  };
 }
 
 /**
@@ -6962,8 +7066,9 @@ function weeklyUpdateCheck() {
  * прежнюю версию, а сети может не быть вовсе.
  */
 
-var BOT_VERSION_DATE = "16.08.2026";
+var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Рассказ «бот обновился» больше не зависит от сети: список изменений вшит в код при сборке, а не запрашивается у GitHub, который отдаёт свежий файл не сразу"
+  "Чек по ссылке доходит, даже когда магазин закрылся от бота: «Рами Леви» отвечал Apps Script отказом 403 — не из-за заголовков, а потому что запрос приходит из облака Google. Теперь при отказе бот повторяет попытку через своего посредника на Vercel, и чек читается как обычно",
+  "Посредник ходит только по адресам известных сервисов чеков и проверяет секретное слово, чтобы не стать открытым прокси"
 ];

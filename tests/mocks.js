@@ -189,6 +189,7 @@ const env = {
         .replace('ss', p(date.getSeconds()));
     },
     base64Encode: bytes => Buffer.from(bytes).toString('base64'),
+    base64Decode: text => Array.from(Buffer.from(String(text), 'base64')),
     newBlob: (content, type, name) => ({
       getBytes: () => Buffer.from(String(content), 'utf8'),
       getContentType: () => type || 'text/plain',

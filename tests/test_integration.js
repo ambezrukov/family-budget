@@ -988,7 +988,7 @@ const json = (body) => ({ code: 200, headers: { 'Content-Type': 'application/jso
 const html = (body) => ({ code: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: body });
 
 const webCalls = [];
-M.setWebResponder((url) => {
+M.setWebResponder((url, params) => {
   webCalls.push(url);
 
   // Pairzon: короткая ссылка → страница-обёртка → готовый чек таблицей
@@ -1016,6 +1016,21 @@ M.setWebResponder((url) => {
   if (url === 'https://digi.rami-levy.co.il/PrimerCheka24680') {
     return html(ramiHtml.replace('</body>',
       '<script type="application/json" id="__NUXT_DATA__">' + JSON.stringify(ramiNuxt) + '</script></body>'));
+  }
+
+  // «Рами Леви» закрылся от серверных запросов, но посредник ту же страницу отдаёт
+  if (url === 'https://digi.rami-levy.co.il/ZakrytyjChek') return { code: 403, body: 'forbidden' };
+  if (url === 'https://primer-proxy.vercel.app/api/fetch') {
+    const asked = params && params.payload ? JSON.parse(params.payload).url : '';
+    if (asked !== 'https://digi.rami-levy.co.il/ZakrytyjChek') return { code: 400, body: '{"ok":false}' };
+    return json({
+      ok: true,
+      status: 200,
+      url: asked,
+      contentType: 'text/html; charset=utf-8',
+      body: ramiHtml.replace('</body>',
+        '<script type="application/json" id="__NUXT_DATA__">' + JSON.stringify(ramiNuxt) + '</script></body>')
+    });
   }
 
   // Незнакомый магазин: чек виден на странице, но разобрать его может только модель
@@ -1129,6 +1144,37 @@ check('дата переведена в местное время', ctx.formatDa
 check('магазин с филиалом', /רמי לוי/.test(String(row[8])) && /עזריאלי/.test(String(row[8])), String(row[8]));
 check('позиции переведены', /черника/.test(String(row[9])), String(row[9]).slice(0, 90));
 check('цена позиции уменьшена на скидку', /черника 125 г — 10/.test(String(row[9])), String(row[9]).slice(0, 90));
+
+// 3-бис. Сайт отказал боту (403) — страницу приносит посредник на Vercel
+M.scriptProps.MINIAPP_URL = 'https://primer-proxy.vercel.app/';
+gemini({
+  enrich: () => ({
+    storeRu: 'Рами Леви',
+    category: 'Продукты',
+    subcategory: 'Супермаркет',
+    items: [
+      { original: 'מגבות נייר כפול 6 יח', name: 'бумажные полотенца, 6 шт.' },
+      { original: 'אוכמניות 125 גרם', name: 'черника 125 г' }
+    ]
+  })
+});
+
+const beforeProxied = rowsCount();
+webCalls.length = 0;
+post({ message: msg({ text: 'התקבלה קבלה חדשה מרמי לוי לצפייה לחץ כאן https://digi.rami-levy.co.il/ZakrytyjChek' }) });
+
+check('чек записан, хотя сайт отказал', rowsCount() === beforeProxied + 1, 'добавлено: ' + (rowsCount() - beforeProxied));
+check('к посреднику обращались', webCalls.some(u => /\/api\/fetch$/.test(u)), webCalls.join(' | ').slice(0, 120));
+row = lastRow();
+check('сумма взята со страницы посредника', row[2] === 27.8, String(row[2]));
+check('магазин распознан', /רמי לוי/.test(String(row[8])), String(row[8]));
+check('способ ввода «ссылка»', row[11] === 'ссылка', String(row[11]));
+
+// Без адреса посредника поведение прежнее: отказ сайта остаётся отказом
+delete M.scriptProps.MINIAPP_URL;
+const beforeNoProxy = rowsCount();
+post({ message: msg({ text: 'https://digi.rami-levy.co.il/ZakrytyjChek' }) });
+check('без посредника чек не записан', rowsCount() === beforeNoProxy, 'добавлено: ' + (rowsCount() - beforeNoProxy));
 
 // 4. Незнакомый магазин: страницу читает модель
 let pageTextSeen = '';
