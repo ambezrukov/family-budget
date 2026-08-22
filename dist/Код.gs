@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.14.0';
+var BOT_VERSION = '1.14.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -5441,6 +5441,7 @@ function setupSpreadsheet() {
   }
 
   addMissingIncomeCategories_();
+  addMissingCategories_();
 
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
   // и без напоминания о новых версиях никто не узнает
@@ -5497,6 +5498,33 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в справочник расходов категории, появившиеся в новых версиях.
+ * Строки, названия которых уже есть, не трогает: ключевые слова могли быть
+ * поправлены руками, и затирать эту работу нельзя.
+ */
+function addMissingCategories_() {
+  var sheet = ensureSheet_(SHEET_CATEGORIES, CATEGORY_COLUMNS);
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 2).getValues().forEach(function (row) {
+      known[String(row[0]).trim() + '|' + String(row[1]).trim()] = true;
+    });
+  }
+
+  var missing = starterCategories_().filter(function (row) {
+    return !known[row[0] + '|' + row[1]];
+  });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  CATEGORIES_CACHE_ = null;
+  logEvent_('Добавлены новые категории расходов',
+    missing.map(function (row) { return row[0] + (row[1] ? ' · ' + row[1] : ''); }).join(', '));
+  return missing.length;
 }
 
 /**
@@ -7652,6 +7680,7 @@ function announceVersionChange_() {
   try {
     addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
     addMissingIncomeCategories_();
+    addMissingCategories_();
   } catch (err) {
     logEvent_('Не удалось дописать справочники', String(err));
   }
@@ -7725,9 +7754,7 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Появилась категория расходов «Уход за собой» с подкатегориями: парикмахер, депиляция, косметолог, маникюр, массаж. Раньше это уходило в «Прочее» вперемешку с химчисткой и ремонтом обуви",
-  "«Прочее · Услуги» осталось для бытового: химчистка, прачечная, ателье",
-  "«/spravochnik расходы добавить» дописывает строки в справочник, не переписывая его целиком, а строку с тем же названием заменяет. Пересылать полсотни категорий ради одной новой больше не нужно"
+  "Новые категории расходов дописываются в таблицу сами при обновлении бота — как это уже работало для доходов. Строки, названия которых там есть, не трогаются: ключевые слова могли быть поправлены руками"
 ];
 
 

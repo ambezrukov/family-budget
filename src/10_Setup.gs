@@ -173,6 +173,7 @@ function setupSpreadsheet() {
   }
 
   addMissingIncomeCategories_();
+  addMissingCategories_();
 
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
   // и без напоминания о новых версиях никто не узнает
@@ -229,6 +230,33 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в справочник расходов категории, появившиеся в новых версиях.
+ * Строки, названия которых уже есть, не трогает: ключевые слова могли быть
+ * поправлены руками, и затирать эту работу нельзя.
+ */
+function addMissingCategories_() {
+  var sheet = ensureSheet_(SHEET_CATEGORIES, CATEGORY_COLUMNS);
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 2).getValues().forEach(function (row) {
+      known[String(row[0]).trim() + '|' + String(row[1]).trim()] = true;
+    });
+  }
+
+  var missing = starterCategories_().filter(function (row) {
+    return !known[row[0] + '|' + row[1]];
+  });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  CATEGORIES_CACHE_ = null;
+  logEvent_('Добавлены новые категории расходов',
+    missing.map(function (row) { return row[0] + (row[1] ? ' · ' + row[1] : ''); }).join(', '));
+  return missing.length;
 }
 
 /**

@@ -286,6 +286,7 @@ function announceVersionChange_() {
   try {
     addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
     addMissingIncomeCategories_();
+    addMissingCategories_();
   } catch (err) {
     logEvent_('Не удалось дописать справочники', String(err));
   }
