@@ -151,7 +151,29 @@ const week = call('reportWeek_');
 check('недельный отчёт строится', week && week.text.length > 0, week ? 'ок' : 'пусто');
 check('в неделе виден средний расход в день', /В среднем в день/.test(week.text));
 
-console.log('\n=== Диаграмма ===');
+console.log('\n=== Правка справочника сильнее автообучения ===');
+
+// Разобрав магазин, бот дописывает его название в ключевые слова. Если он
+// ошибся, человек правит справочник — и автодобавленное название не должно
+// перебивать правку длиной совпадения
+call('rememberStoreCategory_', 'יופיי סבטלנה זינגר', 'Уход за собой', 'Косметолог и уход');
+check('до правки — уход за собой',
+  call('categorizeByDictionary_', 'יופיי סבטלנה זינגר').category === 'Уход за собой',
+  call('categorizeByDictionary_', 'יופיי סבטלנה זינגר').category);
+
+call('handleDirectoryUpload_', { chat: { id: 1 }, from: { id: 1 } }, [
+  '/spravochnik расходы добавить',
+  'Образование | Курсы и языки | ульпан, курсы, זינגר'
+].join('\n'));
+
+check('после правки — образование',
+  call('categorizeByDictionary_', 'יופיי סבטלנה זינגר').category === 'Образование',
+  call('categorizeByDictionary_', 'יופיי סבטלנה זינגר').category);
+check('чужие ключи не пострадали',
+  call('categorizeByDictionary_', 'косметолог').category === 'Уход за собой',
+  call('categorizeByDictionary_', 'косметолог').category);
+
+console.log('\n=== Полоски категорий ===');
 
 // Полоски рисуются всегда: они не зависят ни от картинок, ни от сети
 const bars = call('categoryLines_', [
