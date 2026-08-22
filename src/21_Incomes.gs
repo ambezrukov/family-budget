@@ -61,10 +61,15 @@ function offerIncomeCandidates_(chatId) {
       op.note ? escapeHtml_(shorten_(op.note, 120)) : ''
     ].filter(function (line) { return line; }).join('\n');
 
-    tgSend_(chatId, text, [[
-      { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id },
-      { text: '↔️ Перевод', callback_data: 'ninc:' + op.id }
-    ]]);
+    // «החזר חוב», «החזר כספים» — возврат долга или средств. Деньги пришли,
+    // но заработаны не были, поэтому такую кнопку показываем первой
+    var looksLikeRefund = /החזר|возврат|долг/i.test(op.merchant + ' ' + op.note);
+    var incomeButton = { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id };
+    var transferButton = { text: '↔️ Перевод', callback_data: 'ninc:' + op.id };
+
+    tgSend_(chatId, text, [looksLikeRefund
+      ? [transferButton, incomeButton]
+      : [incomeButton, transferButton]]);
   });
 
   if (pending.length > shown.length) {
@@ -155,4 +160,17 @@ function findOperationById_(operationId) {
     }
   }
   return null;
+}
+
+/**
+ * Команда /postupleniya: показать поступления, о которых бот ещё не спрашивал.
+ */
+function handlePendingIncomes_(message) {
+  var chatId = message.chat.id;
+  var pending = pendingIncomeOperations_();
+  if (!pending.length) {
+    tgSend_(chatId, 'Все поступления разобраны — новых вопросов нет.');
+    return;
+  }
+  offerIncomeCandidates_(chatId);
 }

@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.10.3';
+var BOT_VERSION = '1.10.4';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -2848,6 +2848,7 @@ function helpText_() {
     '/dohody — доходы за месяц и сколько осталось',
     '/otchet — отчёт за прошлый месяц',
     '/import — разобрать выписки из папки «Выписки» на Диске',
+    '/postupleniya — разобрать приходы на счёт: доход или перевод',
     '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
     '/model — какая модель распознаёт чеки и как её сменить',
     '/spravka — эта справка',
@@ -3318,6 +3319,10 @@ function handleCommand_(message, text) {
       return;
     case '/uchet':
       handleAccountingStart_(message, text);
+      return;
+    case '/postupleniya':
+    case '/prihod':
+      handlePendingIncomes_(message);
       return;
     case '/model':
     case '/modeli':
@@ -7668,9 +7673,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Многостраничный PDF больше не превращается в два чека. Страницы одной покупки — позиции, итог, штрихкод для выхода — модель принимала за отдельные чеки, и «Рами Леви» записался дважды: 2 302,98 ₪ вместо 1 151,49 ₪. Теперь страницы с тем же магазином и той же (или нечитаемой) суммой склеиваются в одну запись, а позиции с них собираются вместе",
-  "Появился общий предел времени на обработку сообщения. Перебор моделей плюс дозапрос позиций подбирались к шестиминутному лимиту Google, после которого скрипт убивают без предупреждения — и бот замолкал на полуслове",
-  "Получив чек файлом, бот сразу пишет «взял, читаю»"
+  "Про поступления бот спрашивает и тогда, когда новых строк в файле не нашлось: вопросы могли остаться с прошлого импорта, сделанного версией, которая поступления ещё не разбирала",
+  "Появилась команда /postupleniya — показать приходы на счёт, по которым решение ещё не принято",
+  "Если в назначении платежа стоит «החזר» (возврат долга или средств), кнопка «Перевод» показывается первой: деньги пришли, но заработаны не были, и ошибиться тут легко"
 ];
 
 
@@ -8423,7 +8428,10 @@ function handleStatementDocument_(message, document) {
 
   var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
   tgSend_(chatId, importReportText_(fileName, result));
-  if (result.ok && result.stats.added) {
+  // Спрашиваем и когда новых строк не прибавилось: неотвеченные вопросы могли
+  // остаться с прошлого раза — например, если строки импортировались версией
+  // бота, которая ещё не умела разбирать поступления
+  if (result.ok) {
     offerIncomeCandidates_(chatId);
     offerMergeCandidates_(chatId);
   }
@@ -8524,10 +8532,8 @@ function importFromFolder_(chatId) {
     tgSend_(chatId, importReportText_(name, result));
   });
 
-  if (added) {
-    offerIncomeCandidates_(chatId);
-    offerMergeCandidates_(chatId);
-  }
+  offerIncomeCandidates_(chatId);
+  offerMergeCandidates_(chatId);
 }
 
 /**
@@ -9172,10 +9178,15 @@ function offerIncomeCandidates_(chatId) {
       op.note ? escapeHtml_(shorten_(op.note, 120)) : ''
     ].filter(function (line) { return line; }).join('\n');
 
-    tgSend_(chatId, text, [[
-      { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id },
-      { text: '↔️ Перевод', callback_data: 'ninc:' + op.id }
-    ]]);
+    // «החזר חוב», «החזר כספים» — возврат долга или средств. Деньги пришли,
+    // но заработаны не были, поэтому такую кнопку показываем первой
+    var looksLikeRefund = /החזר|возврат|долг/i.test(op.merchant + ' ' + op.note);
+    var incomeButton = { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id };
+    var transferButton = { text: '↔️ Перевод', callback_data: 'ninc:' + op.id };
+
+    tgSend_(chatId, text, [looksLikeRefund
+      ? [transferButton, incomeButton]
+      : [incomeButton, transferButton]]);
   });
 
   if (pending.length > shown.length) {
@@ -9266,4 +9277,17 @@ function findOperationById_(operationId) {
     }
   }
   return null;
+}
+
+/**
+ * Команда /postupleniya: показать поступления, о которых бот ещё не спрашивал.
+ */
+function handlePendingIncomes_(message) {
+  var chatId = message.chat.id;
+  var pending = pendingIncomeOperations_();
+  if (!pending.length) {
+    tgSend_(chatId, 'Все поступления разобраны — новых вопросов нет.');
+    return;
+  }
+  offerIncomeCandidates_(chatId);
 }

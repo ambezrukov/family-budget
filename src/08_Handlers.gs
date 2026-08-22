@@ -167,6 +167,10 @@ function handleCommand_(message, text) {
     case '/uchet':
       handleAccountingStart_(message, text);
       return;
+    case '/postupleniya':
+    case '/prihod':
+      handlePendingIncomes_(message);
+      return;
     case '/model':
     case '/modeli':
       handleModelCommand_(message, text);

@@ -211,7 +211,10 @@ function handleStatementDocument_(message, document) {
 
   var result = importStatementRows_(rows, fileName, 'tg:' + document.file_id);
   tgSend_(chatId, importReportText_(fileName, result));
-  if (result.ok && result.stats.added) {
+  // Спрашиваем и когда новых строк не прибавилось: неотвеченные вопросы могли
+  // остаться с прошлого раза — например, если строки импортировались версией
+  // бота, которая ещё не умела разбирать поступления
+  if (result.ok) {
     offerIncomeCandidates_(chatId);
     offerMergeCandidates_(chatId);
   }
@@ -312,10 +315,8 @@ function importFromFolder_(chatId) {
     tgSend_(chatId, importReportText_(name, result));
   });
 
-  if (added) {
-    offerIncomeCandidates_(chatId);
-    offerMergeCandidates_(chatId);
-  }
+  offerIncomeCandidates_(chatId);
+  offerMergeCandidates_(chatId);
 }
 
 /**
