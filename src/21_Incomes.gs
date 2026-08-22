@@ -57,8 +57,8 @@ function offerIncomeCandidates_(chatId) {
     var guess = resolveIncomeCategory_('', op.merchant + ' ' + op.note);
     var text = [
       '<b>' + formatMoney_(op.amount, op.currency) + '</b> · ' + formatDate_(op.date),
-      escapeHtml_(op.merchant || 'без названия'),
-      op.note ? escapeHtml_(shorten_(op.note, 120)) : ''
+      escapeHtml_(withRussianHint_(op.merchant) || 'без названия'),
+      op.note ? escapeHtml_(withRussianHint_(shorten_(op.note, 120))) : ''
     ].filter(function (line) { return line; }).join('\n');
 
     // «החזר חוב», «החזר כספים» — возврат долга или средств. Деньги пришли,
@@ -93,7 +93,7 @@ function incomeFromOperation_(operationId) {
     kind: 'доход',
     category: category.category,
     subcategory: category.subcategory,
-    description: operation.merchant || 'Поступление на счёт',
+    description: withRussianHint_(operation.merchant) || 'Поступление на счёт',
     store: '',
     author: '',
     sourceType: 'выписка',
@@ -173,4 +173,71 @@ function handlePendingIncomes_(message) {
     return;
   }
   offerIncomeCandidates_(chatId);
+}
+
+/**
+ * Русское пояснение к банковскому названию операции.
+ *
+ * Названия в выписке — это два-три слова на иврите, часто в сокращении:
+ * «העברה-נייד», «זיכוי», «הו"ק». Через месяц по такой записи уже не вспомнить,
+ * что это было. Список короткий и закрытый: банк пользуется одними и теми же
+ * оборотами, а имена людей и магазинов переводить не нужно — они и на иврите
+ * узнаются.
+ */
+var BANK_TERMS_RU_ = [
+  ['העברה-נייד', 'перевод через приложение'],
+  ['העב\' לאחר-נייד', 'перевод другому лицу'],
+  ['העברה', 'перевод'],
+  ['זיכוי מלאומי', 'зачисление из «Леуми»'],
+  ['זיכוי מדיסקונט', 'зачисление из «Дисконт»'],
+  ['זיכוי בינלאומי', 'зачисление из «Бейнлеуми»'],
+  ['זיכוי', 'зачисление'],
+  ['משכורת', 'зарплата'],
+  ['החזר חוב', 'возврат долга'],
+  ['החזר כספים', 'возврат средств'],
+  ['החזר', 'возврат'],
+  ['ריבית', 'проценты'],
+  ['ביטוח לאומי', 'Битуах Леуми'],
+  ['מס הכנסה', 'налоговая'],
+  ['שיק', 'чек'],
+  ['הוראת קבע', 'постоянное поручение'],
+  ['הו"ק', 'постоянное поручение'],
+  ['דירקט- מצטבר', 'карта «Директ», накопленное списание'],
+  ['דירקט', 'карта «Директ»'],
+  ['מסטרקרד', 'Mastercard'],
+  ['מסטרקארד', 'Mastercard'],
+  ['כרטיסי אשראי', 'кредитные карты'],
+  ['מקס איט פיננסי', 'Max IT Finance'],
+  ['כאל', 'Cal'],
+  ['עמלה', 'комиссия'],
+  ['ע. מסלול בסיסי', 'плата за базовый тариф'],
+  ['ע.מפעולות-ישיר', 'плата за операции'],
+  ['דמי כרטיס', 'плата за карту']
+];
+
+function bankTermRu_(text) {
+  var source = String(text || '');
+  if (!source) return '';
+
+  for (var i = 0; i < BANK_TERMS_RU_.length; i++) {
+    if (source.indexOf(BANK_TERMS_RU_[i][0]) !== -1) return BANK_TERMS_RU_[i][1];
+  }
+
+  // Незнакомое название могло уже попасть в словарь переводов с чеков
+  var known = knownTranslation_(source);
+  return known || '';
+}
+
+/**
+ * «העברה-נייד (перевод через приложение)» — оригинал плюс пояснение.
+ * Если пояснения нет, возвращается только оригинал: скобки без содержания
+ * лишь мешают читать.
+ */
+function withRussianHint_(text) {
+  var source = String(text || '').trim();
+  if (!source) return '';
+  var hint = bankTermRu_(source);
+  if (!hint) return source;
+  if (source.toLowerCase().indexOf(hint.toLowerCase()) !== -1) return source;
+  return source + ' (' + hint + ')';
 }

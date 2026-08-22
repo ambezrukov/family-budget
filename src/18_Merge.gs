@@ -90,7 +90,7 @@ function offerMergeCandidates_(chatId) {
     var text = [
       '<b>' + formatMoney_(op.amount, op.currency) + '</b>',
       'Выписка (' + escapeHtml_(String(op.source)) + '): ' +
-        formatDate_(op.date) + ' · ' + escapeHtml_(op.merchant || 'без названия'),
+        formatDate_(op.date) + ' · ' + escapeHtml_(withRussianHint_(op.merchant) || 'без названия'),
       'Ваша запись: ' + formatDate_(record.date) + ' · ' +
         escapeHtml_(record.description || record.store || record.category)
     ].join('\n');

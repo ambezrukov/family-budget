@@ -450,7 +450,9 @@ function saveOperations_(operations, fileName, fileKey) {
       op.key,
       '', // склейка с записью в «Расходах» проставляется отдельно
       op.file || fileName || '',
-      op.note || '',
+      // Если банк не оставил примечания, кладём русское пояснение к названию:
+      // через месяц «העברה-נייד» в таблице уже ни о чём не говорит
+      op.note || bankTermRu_(op.merchant) || '',
       newRecordId_()
     ]);
     stats.added++;

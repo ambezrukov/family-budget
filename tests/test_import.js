@@ -336,6 +336,33 @@ check('после ответа повторно не спрашивают',
   call('pendingIncomeOperations_').length === pendingBefore,
   pendingBefore + ' vs ' + call('pendingIncomeOperations_').length);
 
+console.log('\n=== Иврит с переводом ===');
+
+check('перевод через приложение', call('withRussianHint_', 'העברה-נייד') ===
+  'העברה-נייד (перевод через приложение)', call('withRussianHint_', 'העברה-נייד'));
+check('зачисление из «Леуми»', call('withRussianHint_', 'זיכוי מלאומי').indexOf('Леуми') !== -1,
+  call('withRussianHint_', 'זיכוי מלאומי'));
+check('возврат долга виден в примечании',
+  call('withRussianHint_', 'עבור: החזר חוב').indexOf('возврат долга') !== -1,
+  call('withRussianHint_', 'עבור: החזר חוב'));
+check('незнакомое название остаётся как есть',
+  call('withRussianHint_', 'מכולת של יוסי') === 'מכולת של יוסי',
+  call('withRussianHint_', 'מכולת של יוסי'));
+
+// Запись дохода получает и оригинал, и пояснение
+const withHint = call('importStatementRows_', [
+  ['תאריך', 'הפעולה', 'פרטים', 'אסמכתא', 'חובה', 'זכות', "יתרה בש''ח", 'תאריך ערך'],
+  ['2026-08-22', 'משכורת', '', '950', '', '9000', '1', '2026-08-22']
+], 'банк-зарплата.csv', 'файл-зарплата');
+check('строка записана', withHint.stats.added === 1, String(withHint.stats.added));
+
+const salaryOp = call('pendingIncomeOperations_').filter(op => op.amount === 9000)[0];
+const salaryIncome = call('incomeFromOperation_', salaryOp.id);
+check('в описании дохода есть и иврит, и русский',
+  /משכורת/.test(salaryIncome.record.description) &&
+  /зарплата/.test(salaryIncome.record.description),
+  salaryIncome.record.description);
+
 console.log('\n=== Дата начала учёта командой ===');
 
 call('updateSetting_', 'Учёт с', '');
