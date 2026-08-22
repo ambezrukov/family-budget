@@ -121,14 +121,11 @@ function handleCommand_(message, text) {
       return;
     case '/mesyac':
     case '/month':
-      var monthReport = reportCurrentMonth_();
-      sendReportWithChart_(chatId, monthReport.text || monthReport,
-        monthReport.groups || [], 'Расходы за месяц');
+      tgSend_(chatId, reportCurrentMonth_().text);
       return;
     case '/nedelya':
     case '/week':
-      var weekReport = reportWeek_();
-      sendReportWithChart_(chatId, weekReport.text, weekReport.groups, 'Расходы за неделю');
+      tgSend_(chatId, reportWeek_().text);
       return;
     case '/poslednie':
     case '/last':

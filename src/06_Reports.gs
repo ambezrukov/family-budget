@@ -444,18 +444,10 @@ function sendMonthlyReport() {
     var report = buildMonthlyReport_(lastMonth);
     var delivered = [];
 
-    // Диаграмму строим один раз на всех: рисовать её каждому адресату —
-    // лишняя работа для таблицы
-    var groups = groupBy_(budgetExpenses_({
-      from: monthStart_(lastMonth), to: monthEnd_(lastMonth)
-    }), 'category');
-    var chart = categoryChartBlob_(groups, 'Расходы за ' + monthTitle_(lastMonth).toLowerCase());
-
     chatIds.forEach(function (chatId) {
       var result = tgSend_(chatId, report);
       if (result && result.ok) delivered.push(chatId);
       else logEvent_('Отчёт не доставлен', { chat: chatId });
-      if (chart) tgSendPhoto_(chatId, chart, 'Расходы по категориям');
     });
 
     logEvent_('Месячный отчёт отправлен', {

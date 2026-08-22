@@ -287,6 +287,9 @@ function announceVersionChange_() {
     addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
     addMissingIncomeCategories_();
     addMissingCategories_();
+    // Меню команд телеграма живёт на его стороне: новая команда не появится
+    // в подсказке, пока бот о ней не сообщит
+    setBotCommands();
   } catch (err) {
     logEvent_('Не удалось дописать справочники', String(err));
   }

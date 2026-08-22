@@ -54,7 +54,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.16.0';
+var BOT_VERSION = '1.16.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1136,37 +1136,6 @@ function tgAnswerCallback_(callbackId, text) {
  * Отправка файла. Нужна, чтобы прислать новый код бота прямо в чат:
  * человеку остаётся открыть его и вставить в редактор.
  */
-/**
- * Отправляет картинку. Телеграм показывает её прямо в переписке, поэтому
- * диаграмма видна сразу, без скачивания.
- */
-function tgSendPhoto_(chatId, blob, caption) {
-  try {
-    var response = UrlFetchApp.fetch(tgApiUrl_('sendPhoto'), {
-      method: 'post',
-      payload: {
-        chat_id: String(chatId),
-        caption: String(caption || '').substring(0, 1000),
-        parse_mode: 'HTML',
-        photo: blob
-      },
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) {
-      logEvent_('Картинка не отправилась', {
-        code: response.getResponseCode(),
-        body: response.getContentText().substring(0, 500)
-      });
-      return false;
-    }
-    return true;
-  } catch (err) {
-    logEvent_('Сбой отправки картинки', String(err));
-    return false;
-  }
-}
-
 function tgSendDocument_(chatId, blob, caption) {
   try {
     var response = UrlFetchApp.fetch(tgApiUrl_('sendDocument'), {
@@ -1319,12 +1288,20 @@ function getWebhookInfo() {
  */
 function setBotCommands() {
   var result = tgCall_('setMyCommands', {
+    // Порядок — по частоте: то, что спрашивают каждый день, сверху
     commands: [
+      { command: 'nedelya', description: 'Расходы за последние семь дней' },
       { command: 'mesyac', description: 'Расходы за текущий месяц по категориям' },
-      { command: 'poslednie', description: 'Последние 10 записей' },
       { command: 'segodnya', description: 'Сумма за сегодня' },
+      { command: 'poslednie', description: 'Последние 10 записей' },
       { command: 'dohody', description: 'Доходы за месяц и остаток' },
       { command: 'otchet', description: 'Отчёт за прошлый месяц' },
+      { command: 'import', description: 'Разобрать выписки из папки «Выписки»' },
+      { command: 'postupleniya', description: 'Приходы на счёт: доход или перевод' },
+      { command: 'kategorii', description: 'Разложить магазины из выписок по категориям' },
+      { command: 'uchet', description: 'С какой даты брать строки выписок' },
+      { command: 'model', description: 'Какая модель распознаёт чеки' },
+      { command: 'miniapp', description: 'Адрес страницы со сводкой' },
       { command: 'spravka', description: 'Как вводить расходы' },
       { command: 'imya', description: 'Как подписывать меня в таблице' },
       { command: 'avtory', description: 'Свести имена авторов' },
@@ -3078,18 +3055,10 @@ function sendMonthlyReport() {
     var report = buildMonthlyReport_(lastMonth);
     var delivered = [];
 
-    // Диаграмму строим один раз на всех: рисовать её каждому адресату —
-    // лишняя работа для таблицы
-    var groups = groupBy_(budgetExpenses_({
-      from: monthStart_(lastMonth), to: monthEnd_(lastMonth)
-    }), 'category');
-    var chart = categoryChartBlob_(groups, 'Расходы за ' + monthTitle_(lastMonth).toLowerCase());
-
     chatIds.forEach(function (chatId) {
       var result = tgSend_(chatId, report);
       if (result && result.ok) delivered.push(chatId);
       else logEvent_('Отчёт не доставлен', { chat: chatId });
-      if (chart) tgSendPhoto_(chatId, chart, 'Расходы по категориям');
     });
 
     logEvent_('Месячный отчёт отправлен', {
@@ -3368,14 +3337,11 @@ function handleCommand_(message, text) {
       return;
     case '/mesyac':
     case '/month':
-      var monthReport = reportCurrentMonth_();
-      sendReportWithChart_(chatId, monthReport.text || monthReport,
-        monthReport.groups || [], 'Расходы за месяц');
+      tgSend_(chatId, reportCurrentMonth_().text);
       return;
     case '/nedelya':
     case '/week':
-      var weekReport = reportWeek_();
-      sendReportWithChart_(chatId, weekReport.text, weekReport.groups, 'Расходы за неделю');
+      tgSend_(chatId, reportWeek_().text);
       return;
     case '/poslednie':
     case '/last':
@@ -7788,6 +7754,9 @@ function announceVersionChange_() {
     addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
     addMissingIncomeCategories_();
     addMissingCategories_();
+    // Меню команд телеграма живёт на его стороне: новая команда не появится
+    // в подсказке, пока бот о ней не сообщит
+    setBotCommands();
   } catch (err) {
     logEvent_('Не удалось дописать справочники', String(err));
   }
@@ -7861,9 +7830,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Появился недельный отчёт: /nedelya. Показывает расходы за последние семь дней, средний расход в день и насколько это больше или меньше прошлой недели. Неделя скользящая — от сегодня назад, а не от понедельника",
-  "В раскладке по категориям теперь видно соотношение: под каждой строкой полоска, рядом доля в процентах",
-  "К отчётам за неделю и месяц бот присылает круговую диаграмму картинкой. Рисует её сама Google Таблица — внешние сервисы не используются, поэтому сломаться тут нечему. Не получилось построить — отчёт всё равно уходит"
+  "Меню команд телеграма обновляется само при выходе новой версии. Раньше новая команда работала, но в подсказке не появлялась, пока список не пропишут вручную из редактора",
+  "В меню добавлены /nedelya, /import, /postupleniya, /kategorii, /uchet, /model и /miniapp",
+  "Круговая диаграмма картинкой убрана: полосок в тексте достаточно, а лишний файл в переписке только мешает"
 ];
 
 
@@ -10148,15 +10117,12 @@ function handleCategorizeCommand_(message) {
 /**
  * 24_Charts.gs — наглядная раскладка по категориям.
  *
- * Два уровня наглядности, и оба нужны.
+ * Полоски из символов идут прямо в тексте сообщения: видны сразу, не требуют
+ * загрузки картинки и читаются в любом клиенте.
  *
- * Полоски из символов идут прямо в тексте сообщения: они видны сразу, не
- * требуют загрузки картинки и читаются даже там, где изображения отключены.
- *
- * Круговая диаграмма приходит отдельной картинкой. Рисует её сама Google
- * Таблица: бот создаёт скрытый лист, кладёт туда числа, просит построить
- * диаграмму и забирает её изображением. Внешние сервисы для этого не нужны —
- * а значит, ничего не сломается, когда очередной бесплатный сервис закроется.
+ * Картинку с круговой диаграммой пробовали — Google Таблица умеет отдавать
+ * график изображением. Отказались: сообщение с полосками отвечает на вопрос
+ * «куда ушли деньги» не хуже, а лишний файл в переписке только мешает.
  */
 
 var CHART_BARS_ = '▇';
@@ -10186,67 +10152,4 @@ function categoryLines_(groups, total) {
       (share ? ' · ' + share + '%' : '') + '\n' +
       '<code>' + categoryBar_(group.sum, max) + '</code>';
   });
-}
-
-/**
- * Круговая диаграмма по категориям — изображением.
- * Возвращает null, если построить не удалось: отчёт должен уйти в любом случае.
- */
-function categoryChartBlob_(groups, title) {
-  if (!groups || groups.length < 2) return null; // одна категория — не диаграмма
-
-  var ss = getSpreadsheet_();
-  var sheet = null;
-
-  try {
-    sheet = ss.insertSheet('_диаграмма_' + new Date().getTime());
-    sheet.hideSheet();
-
-    // Мелкие категории сводим в «Прочее»: десяток подписей на круге
-    // превращает диаграмму в кашу
-    var top = groups.slice(0, 8);
-    var rest = groups.slice(8).reduce(function (sum, group) { return sum + group.sum; }, 0);
-
-    var rows = [['Категория', 'Сумма']];
-    top.forEach(function (group) { rows.push([group.key, Math.round(group.sum * 100) / 100]); });
-    if (rest > 0) rows.push(['Остальное', Math.round(rest * 100) / 100]);
-
-    sheet.getRange(1, 1, rows.length, 2).setValues(rows);
-
-    var chart = sheet.newChart()
-      .asPieChart()
-      .addRange(sheet.getRange(1, 1, rows.length, 2))
-      .setOption('title', title || 'Расходы по категориям')
-      .setOption('width', 720)
-      .setOption('height', 460)
-      .setOption('pieSliceText', 'percentage')
-      .setOption('legend', { position: 'right', textStyle: { fontSize: 12 } })
-      .build();
-
-    sheet.insertChart(chart);
-    SpreadsheetApp.flush();
-
-    var charts = sheet.getCharts();
-    if (!charts.length) return null;
-
-    return charts[0].getBlob().getAs('image/png').setName('categories.png');
-  } catch (err) {
-    logEvent_('Диаграмма не построилась', String(err));
-    return null;
-  } finally {
-    // Лист временный: остаться в таблице он не должен ни при каком исходе
-    if (sheet) {
-      try { ss.deleteSheet(sheet); } catch (err2) { /* уже удалён */ }
-    }
-  }
-}
-
-/**
- * Отправляет отчёт с диаграммой: текст, затем картинка.
- */
-function sendReportWithChart_(chatId, text, groups, title) {
-  tgSend_(chatId, text);
-
-  var blob = categoryChartBlob_(groups, title);
-  if (blob) tgSendPhoto_(chatId, blob, title);
 }

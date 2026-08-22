@@ -164,12 +164,6 @@ check('у крупной категории полоска длиннее',
   (bars[0].match(/▇/g) || []).length + ' vs ' + (bars[1].match(/▇/g) || []).length);
 check('доля посчитана', /80%/.test(bars[0]), bars[0]);
 
-// Картинку рисует настоящая Google Таблица; в эмуляции графики нет — и это
-// не должно ломать отчёт
-const blob = call('categoryChartBlob_', [
-  { key: 'Продукты', sum: 1000 }, { key: 'Транспорт', sum: 250 }
-], 'Проверка');
-check('без графики отчёт не падает', blob === null, String(blob));
 
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

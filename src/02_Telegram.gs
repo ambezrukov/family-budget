@@ -81,37 +81,6 @@ function tgAnswerCallback_(callbackId, text) {
  * Отправка файла. Нужна, чтобы прислать новый код бота прямо в чат:
  * человеку остаётся открыть его и вставить в редактор.
  */
-/**
- * Отправляет картинку. Телеграм показывает её прямо в переписке, поэтому
- * диаграмма видна сразу, без скачивания.
- */
-function tgSendPhoto_(chatId, blob, caption) {
-  try {
-    var response = UrlFetchApp.fetch(tgApiUrl_('sendPhoto'), {
-      method: 'post',
-      payload: {
-        chat_id: String(chatId),
-        caption: String(caption || '').substring(0, 1000),
-        parse_mode: 'HTML',
-        photo: blob
-      },
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) {
-      logEvent_('Картинка не отправилась', {
-        code: response.getResponseCode(),
-        body: response.getContentText().substring(0, 500)
-      });
-      return false;
-    }
-    return true;
-  } catch (err) {
-    logEvent_('Сбой отправки картинки', String(err));
-    return false;
-  }
-}
-
 function tgSendDocument_(chatId, blob, caption) {
   try {
     var response = UrlFetchApp.fetch(tgApiUrl_('sendDocument'), {
@@ -264,12 +233,20 @@ function getWebhookInfo() {
  */
 function setBotCommands() {
   var result = tgCall_('setMyCommands', {
+    // Порядок — по частоте: то, что спрашивают каждый день, сверху
     commands: [
+      { command: 'nedelya', description: 'Расходы за последние семь дней' },
       { command: 'mesyac', description: 'Расходы за текущий месяц по категориям' },
-      { command: 'poslednie', description: 'Последние 10 записей' },
       { command: 'segodnya', description: 'Сумма за сегодня' },
+      { command: 'poslednie', description: 'Последние 10 записей' },
       { command: 'dohody', description: 'Доходы за месяц и остаток' },
       { command: 'otchet', description: 'Отчёт за прошлый месяц' },
+      { command: 'import', description: 'Разобрать выписки из папки «Выписки»' },
+      { command: 'postupleniya', description: 'Приходы на счёт: доход или перевод' },
+      { command: 'kategorii', description: 'Разложить магазины из выписок по категориям' },
+      { command: 'uchet', description: 'С какой даты брать строки выписок' },
+      { command: 'model', description: 'Какая модель распознаёт чеки' },
+      { command: 'miniapp', description: 'Адрес страницы со сводкой' },
       { command: 'spravka', description: 'Как вводить расходы' },
       { command: 'imya', description: 'Как подписывать меня в таблице' },
       { command: 'avtory', description: 'Свести имена авторов' },
