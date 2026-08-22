@@ -45,7 +45,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.5.7';
+var BOT_VERSION = '1.5.8';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -5839,7 +5839,12 @@ function fetchViaProxy_(url) {
   }
 
   if (!data || !data.ok) {
-    logEvent_('Посредник не отдал страницу', { url: url, error: data && data.error });
+    logEvent_('Посредник не отдал страницу', {
+      url: url,
+      статус: data && data.status,
+      error: data && data.error,
+      начало: data && data.sample
+    });
     return null;
   }
 
@@ -6227,9 +6232,15 @@ function weezmoToReceipt_(doc) {
  * в себе готовыми, а разбор текста оставляем как запасной путь.
  */
 function ramiLevyReceipt_(page, parts) {
-  var doc = nuxtPayload_(page.response.getContentText(), ['items', 'payments', 'created_at']);
+  var text = page.response.getContentText();
+  var doc = nuxtPayload_(text, ['items', 'payments', 'created_at']);
   if (!doc) {
-    logEvent_('Чек «Рами Леви» не разобрался, читаем страницу текстом', { url: page.url });
+    logEvent_('Чек «Рами Леви» не разобрался, читаем страницу текстом', {
+      url: page.url,
+      длина: String(text || '').length,
+      данныеЕсть: /__NUXT_DATA__/.test(String(text || '')),
+      начало: String(text || '').replace(/\s+/g, ' ').slice(0, 200)
+    });
     return null;
   }
 
@@ -7069,6 +7080,6 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Чек по ссылке доходит, даже когда магазин закрылся от бота: «Рами Леви» отвечал Apps Script отказом 403 — не из-за заголовков, а потому что запрос приходит из облака Google. Теперь при отказе бот повторяет попытку через своего посредника на Vercel, и чек читается как обычно",
-  "Посредник ходит только по адресам известных сервисов чеков и проверяет секретное слово, чтобы не стать открытым прокси"
+  "Посредник больше не выдаёт страницу с ошибкой за чек: если магазин ответил отказом и ему, бот честно об этом пишет и предлагает прислать фото",
+  "В журнал попадает, что именно вернулось: длина страницы и есть ли в ней данные чека — по прошлой записи «не разобрался» причину было не понять"
 ];

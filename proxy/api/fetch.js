@@ -84,6 +84,17 @@ export default async function handler(request, response) {
     const contentType = fetched.headers.get('content-type') || '';
     const buffer = Buffer.from(await fetched.arrayBuffer());
 
+    // Сайт мог ответить отказом и нам: тогда в теле не чек, а страница ошибки.
+    // Отдавать её боту нельзя — он примет мусор за содержимое чека.
+    if (!fetched.ok) {
+      return response.status(200).json({
+        ok: false,
+        status: fetched.status,
+        error: 'Сайт ответил ' + fetched.status,
+        sample: buffer.toString('utf8').replace(/\s+/g, ' ').slice(0, 300)
+      });
+    }
+
     if (buffer.length > MAX_BYTES) {
       return response.status(502).json({ ok: false, error: 'Страница слишком большая' });
     }

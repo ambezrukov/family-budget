@@ -295,7 +295,12 @@ function fetchViaProxy_(url) {
   }
 
   if (!data || !data.ok) {
-    logEvent_('Посредник не отдал страницу', { url: url, error: data && data.error });
+    logEvent_('Посредник не отдал страницу', {
+      url: url,
+      статус: data && data.status,
+      error: data && data.error,
+      начало: data && data.sample
+    });
     return null;
   }
 
@@ -683,9 +688,15 @@ function weezmoToReceipt_(doc) {
  * в себе готовыми, а разбор текста оставляем как запасной путь.
  */
 function ramiLevyReceipt_(page, parts) {
-  var doc = nuxtPayload_(page.response.getContentText(), ['items', 'payments', 'created_at']);
+  var text = page.response.getContentText();
+  var doc = nuxtPayload_(text, ['items', 'payments', 'created_at']);
   if (!doc) {
-    logEvent_('Чек «Рами Леви» не разобрался, читаем страницу текстом', { url: page.url });
+    logEvent_('Чек «Рами Леви» не разобрался, читаем страницу текстом', {
+      url: page.url,
+      длина: String(text || '').length,
+      данныеЕсть: /__NUXT_DATA__/.test(String(text || '')),
+      начало: String(text || '').replace(/\s+/g, ' ').slice(0, 200)
+    });
     return null;
   }
 
