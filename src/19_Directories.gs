@@ -14,17 +14,25 @@
 
 var DIRECTORY_TARGETS_ = {
   'карты': { sheet: 'Карты', columns: 'CARD' },
-  'источники': { sheet: 'Источники', columns: 'SOURCE' }
+  'источники': { sheet: 'Источники', columns: 'SOURCE' },
+  'доходы': { sheet: 'Категории доходов', columns: 'CATEGORY' },
+  'расходы': { sheet: 'Категории', columns: 'CATEGORY' }
 };
 
 function directorySpec_(word) {
   var key = String(word || '').toLowerCase().trim();
   if (!DIRECTORY_TARGETS_[key]) return null;
   var target = DIRECTORY_TARGETS_[key];
+  var sheets = {
+    CARD: { name: SHEET_CARDS, columns: CARD_COLUMNS },
+    SOURCE: { name: SHEET_SOURCES, columns: SOURCE_COLUMNS },
+    CATEGORY: { name: target.sheet, columns: CATEGORY_COLUMNS }
+  };
+
   return {
     name: target.sheet,
-    sheetName: target.columns === 'CARD' ? SHEET_CARDS : SHEET_SOURCES,
-    columns: target.columns === 'CARD' ? CARD_COLUMNS : SOURCE_COLUMNS
+    sheetName: sheets[target.columns].name,
+    columns: sheets[target.columns].columns
   };
 }
 
@@ -55,9 +63,11 @@ function handleDirectoryUpload_(message, text) {
   var spec = directorySpec_(word);
 
   if (!spec) {
-    tgSend_(chatId, 'Какой справочник заполняем? Напишите <code>/spravochnik карты</code> ' +
-      'или <code>/spravochnik источники</code>, а следующими строками — сами записи, ' +
-      'поля через <code>|</code>.');
+    tgSend_(chatId, 'Какой справочник заполняем? Бывают <code>карты</code>, ' +
+      '<code>источники</code>, <code>доходы</code> и <code>расходы</code>. ' +
+      'Пишите так: <code>/spravochnik доходы</code>, а следующими строками — ' +
+      'сами записи, поля через <code>|</code>. Присланный список заменяет ' +
+      'справочник целиком.');
     return;
   }
 
@@ -72,6 +82,11 @@ function handleDirectoryUpload_(message, text) {
   var last = sheet.getLastRow();
   if (last > 1) sheet.getRange(2, 1, last - 1, spec.columns.length).clearContent();
   sheet.getRange(2, 1, rows.length, spec.columns.length).setValues(rows);
+
+  // Справочники категорий кэшируются: без сброса бот продолжил бы раскладывать
+  // траты по старому списку до перезапуска
+  CATEGORIES_CACHE_ = null;
+  INCOME_CATEGORIES_CACHE_ = null;
 
   logEvent_('Справочник обновлён из чата', { лист: spec.name, записей: rows.length });
   tgSend_(chatId, 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');

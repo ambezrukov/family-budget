@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.13.0';
+var BOT_VERSION = '1.13.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -5301,6 +5301,9 @@ function starterIncomeCategories_() {
     // Для израильского контура это приход, хотя в назначении платежа
     // человек напишет «возврат долга»
     ['Обменные операции', '', 'обмен, обменн, החזר חוב, החזר כספים, החזר, возврат долга, возврат средств'],
+    // Уроки и частная практика: имена учеников дописываются в таблице —
+    // в коде, который лежит в открытом репозитории, им не место
+    ['Заработок Маши', '', 'урок, уроки, lesson, lessons, репетит, занятия, ученик, שיעור'],
     ['Прочие доходы', '', '']
   ];
 }
@@ -7716,11 +7719,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Бот читает выписки Bit. Перевод, оплаченный кредитной картой, тратой не считается: та же сумма придёт из выписки карты, и учесть её дважды было бы легко. Тратой считается только то, что ушло с баланса Bit",
-  "Зачисления на Bit попадают в разбор поступлений — доход это или перевод, решаете вы",
-  "Безымянные строки «BIT» и «PAYBOX» в выписке карты бот подписывает именем получателя из Bit: «Bit → Балет Израиль». Кому и за что переведено, знает только сам Bit",
-  "Отменённые переводы пропускаются",
-  "При поиске колонок точное совпадение названия теперь важнее частичного: у Bit рядом стоят «сумма» и «сумма комиссии», и раньше сумма читалась из графы комиссии, то есть как ноль"
+  "В справочнике доходов появилась статья «Заработок Маши» — уроки и частная практика",
+  "Команда /spravochnik теперь правит и справочники категорий: «/spravochnik доходы» и «/spravochnik расходы». Имена учеников и прочие личные подробности так попадают в таблицу, минуя код бота",
+  "После правки справочника из чата бот сразу начинает раскладывать траты по новому списку, не дожидаясь перезапуска"
 ];
 
 
@@ -9004,17 +9005,25 @@ function countOperationsBefore_(date) {
 
 var DIRECTORY_TARGETS_ = {
   'карты': { sheet: 'Карты', columns: 'CARD' },
-  'источники': { sheet: 'Источники', columns: 'SOURCE' }
+  'источники': { sheet: 'Источники', columns: 'SOURCE' },
+  'доходы': { sheet: 'Категории доходов', columns: 'CATEGORY' },
+  'расходы': { sheet: 'Категории', columns: 'CATEGORY' }
 };
 
 function directorySpec_(word) {
   var key = String(word || '').toLowerCase().trim();
   if (!DIRECTORY_TARGETS_[key]) return null;
   var target = DIRECTORY_TARGETS_[key];
+  var sheets = {
+    CARD: { name: SHEET_CARDS, columns: CARD_COLUMNS },
+    SOURCE: { name: SHEET_SOURCES, columns: SOURCE_COLUMNS },
+    CATEGORY: { name: target.sheet, columns: CATEGORY_COLUMNS }
+  };
+
   return {
     name: target.sheet,
-    sheetName: target.columns === 'CARD' ? SHEET_CARDS : SHEET_SOURCES,
-    columns: target.columns === 'CARD' ? CARD_COLUMNS : SOURCE_COLUMNS
+    sheetName: sheets[target.columns].name,
+    columns: sheets[target.columns].columns
   };
 }
 
@@ -9045,9 +9054,11 @@ function handleDirectoryUpload_(message, text) {
   var spec = directorySpec_(word);
 
   if (!spec) {
-    tgSend_(chatId, 'Какой справочник заполняем? Напишите <code>/spravochnik карты</code> ' +
-      'или <code>/spravochnik источники</code>, а следующими строками — сами записи, ' +
-      'поля через <code>|</code>.');
+    tgSend_(chatId, 'Какой справочник заполняем? Бывают <code>карты</code>, ' +
+      '<code>источники</code>, <code>доходы</code> и <code>расходы</code>. ' +
+      'Пишите так: <code>/spravochnik доходы</code>, а следующими строками — ' +
+      'сами записи, поля через <code>|</code>. Присланный список заменяет ' +
+      'справочник целиком.');
     return;
   }
 
@@ -9062,6 +9073,11 @@ function handleDirectoryUpload_(message, text) {
   var last = sheet.getLastRow();
   if (last > 1) sheet.getRange(2, 1, last - 1, spec.columns.length).clearContent();
   sheet.getRange(2, 1, rows.length, spec.columns.length).setValues(rows);
+
+  // Справочники категорий кэшируются: без сброса бот продолжил бы раскладывать
+  // траты по старому списку до перезапуска
+  CATEGORIES_CACHE_ = null;
+  INCOME_CATEGORIES_CACHE_ = null;
 
   logEvent_('Справочник обновлён из чата', { лист: spec.name, записей: rows.length });
   tgSend_(chatId, 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');
