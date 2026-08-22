@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.10.1';
+var BOT_VERSION = '1.10.2';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1353,7 +1353,11 @@ function geminiJson_(options) {
     contents: [{ role: 'user', parts: options.parts }],
     generationConfig: {
       temperature: options.temperature === undefined ? 0 : options.temperature,
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      // Чек из супермаркета на 66 позиций с ивритскими названиями — это
+      // несколько тысяч токенов ответа. По умолчанию модель обрывает вывод
+      // раньше, и список позиций возвращается пустым
+      maxOutputTokens: options.maxOutputTokens || 8192
     }
   };
   if (options.schema) body.generationConfig.responseSchema = options.schema;
@@ -1948,6 +1952,9 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
     '- Название магазина в поле store оставь как на чеке, а в storeRu дай ' +
     'привычное русское написание: «שופרסל» → «Шуферсаль», «רמי לוי» → «Рами Леви». ' +
     'Если название и так по-русски, storeRu оставь пустым.\n' +
+    '- Перечисли ВСЕ позиции чека, сколько бы их ни было: длинный чек из ' +
+    'супермаркета на полсотни строк нужно вернуть целиком, не сокращая ' +
+    'и не заменяя часть словами «и другие».\n' +
     '- Если позиции не читаются — верни пустой список.\n' +
     '- Категорию выбери из списка: ' + categories.join(', ') + '. ' +
     'Если ничего не подходит — «Без категории».\n' +
@@ -1960,15 +1967,73 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
       'для выбора категории и описания.';
   }
 
-  return geminiJson_({
+  var answer = geminiJson_({
     model: modelForMedia_(),
     systemInstruction: 'Ты помощник семейного учёта расходов. Отвечай только строгим JSON по заданной схеме.',
     parts: [
       { text: prompt },
       { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
     ],
-    schema: schemaReceiptList_()
+    schema: schemaReceiptList_(),
+    maxOutputTokens: 32768
   });
+
+  // Бывает, что сумму модель разобрала, а список позиций вернула пустым — на
+  // длинном чеке это обычно значит, что она сдалась на полпути. Спрашиваем
+  // ещё раз, коротко и только про позиции
+  if (answer && answer.receipts && answer.receipts.length === 1) {
+    var receipt = answer.receipts[0];
+    if (receipt.readable && receipt.total > 0 && (!receipt.items || !receipt.items.length)) {
+      var items = geminiReceiptItems_(base64Image, mimeType);
+      if (items && items.length) {
+        receipt.items = items;
+        logEvent_('Позиции чека дозапрошены отдельно', { позиций: items.length });
+      }
+    }
+  }
+
+  return answer;
+}
+
+/**
+ * Отдельный запрос только за позициями чека.
+ *
+ * Короткий запрос без остальных правил укладывается в предел вывода там, где
+ * полный разбор обрывался: модели остаётся выписать один список.
+ */
+function geminiReceiptItems_(base64Image, mimeType) {
+  var answer = geminiJson_({
+    model: modelForMedia_(),
+    systemInstruction: 'Отвечай только строгим JSON по заданной схеме.',
+    parts: [
+      { text: 'Выпиши ВСЕ позиции этого чека по порядку, ничего не пропуская. ' +
+        'В поле name — название по-русски, в original — как написано на чеке, ' +
+        'в price — цена позиции числом. Итоговую строку чека и залог за тару ' +
+        'в список не включай.' },
+      { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
+    ],
+    schema: {
+      type: 'OBJECT',
+      properties: {
+        items: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              name: { type: 'STRING' },
+              original: { type: 'STRING' },
+              price: { type: 'NUMBER' }
+            },
+            required: ['name']
+          }
+        }
+      },
+      required: ['items']
+    },
+    maxOutputTokens: 32768
+  });
+
+  return answer && answer.items ? answer.items : null;
 }
 
 /**
@@ -3970,6 +4035,10 @@ function handleReceipt_(message, fileId, sourceType) {
   var chatId = message.chat.id;
   var caption = String(message.caption || '').trim();
   var kind = sourceType || 'фото';
+
+  // Телеграм иногда подставляет в подпись само имя файла. Уточнением для
+  // категории «2_5208959065555772963.pdf» не является — только сбивает
+  if (/^[\w.\-]+\.(pdf|jpe?g|png|heic|webp)$/i.test(caption)) caption = '';
 
   tgSendChatAction_(chatId, 'typing');
 
@@ -7506,10 +7575,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Бот читает выписки Cal. Они устроены не как у остальных: заголовки с переносом строки внутри ячейки, номер карты не в строках, а в шапке и в имени файла, дата списания — одна на весь файл",
-  "Заголовок Cal растянут на все колонки и затекал в примечание каждой строки — теперь такой текст отбрасывается",
-  "«הוראת קבע» распознаётся как постоянное поручение, у рассрочки берётся ежемесячный платёж, а не вся сумма покупки",
-  "Номер платежа («תשלום 3 מתוך 12») входит в ключ строки: без него платёж за следующий месяц считался бы повтором предыдущего и терялся"
+  "Длинные чеки записываются с позициями. Чек «Рами Леви» на 66 строк попал в таблицу одной суммой: у ответа модели есть предел длины, и список обрывался ещё до того, как начаться. Предел поднят, а если позиции всё равно вернулись пустыми — бот спрашивает их отдельным коротким запросом",
+  "В подсказке модели сказано прямо: перечислить все позиции, не сокращая",
+  "Имя файла больше не попадает в описание записи: телеграм иногда подставляет его в подпись, и в таблице оказывалось «2_5208…pdf»"
 ];
 
 

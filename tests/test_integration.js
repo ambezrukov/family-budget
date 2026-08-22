@@ -58,6 +58,9 @@ const defaultTextModel = (payload) => {
 
 M.setGeminiResponder((payload, url) => {
   const prompt = JSON.stringify(payload);
+  if (prompt.includes('Выпиши ВСЕ позиции')) {
+    return geminiPlan.receiptItems ? geminiPlan.receiptItems(payload) : { items: [] };
+  }
   if (prompt.includes('кассовый чек')) return geminiPlan.receipt ? geminiPlan.receipt(payload, url) : null;
   if (prompt.includes('текст страницы с чеком')) {
     return geminiPlan.pageReceipt ? geminiPlan.pageReceipt(payload) : null;
@@ -487,6 +490,34 @@ check('после ответа записаны оба', rowsCount() === beforeP
 const partialRows = expenses().getRange(expenses().getLastRow() - 1, 1, 2, 17).getValues();
 check('суммы верны', partialRows.map(r => r[2]).join(',') === '90,54',
   partialRows.map(r => r[2]).join(','));
+
+console.log('\n=== Длинный чек: позиции дозапрашиваются ===');
+
+// 22.08.2026 чек «Рами Леви» на 66 позиций записался одной суммой: модель
+// разобрала итог, а список позиций вернула пустым. Тогда бот спрашивает
+// отдельно — коротким запросом, где ей остаётся выписать только список.
+let itemsAsked = 0;
+gemini({
+  receipt: () => ({ receipts: [{
+    total: 1151.49, currency: 'ILS', datetime: '', store: 'רמי לוי', storeRu: 'Рами Леви',
+    category: 'Продукты', subcategory: 'Супермаркет',
+    items: [], tips: 0, readable: true, note: ''
+  }] }),
+  receiptItems: () => {
+    itemsAsked++;
+    return { items: [
+      { name: 'Молоко 3%', original: 'חלב 3%', price: 6.9 },
+      { name: 'Хлеб', original: 'לחם', price: 8.5 }
+    ] };
+  }
+});
+
+post({ message: msg({ document: { file_id: 'doc9', mime_type: 'application/pdf' } }) });
+row = lastRow();
+check('позиции запрошены отдельно', itemsAsked === 1, String(itemsAsked));
+// Написание берётся из словаря переводов, если это название уже встречалось
+check('позиции попали в запись', /молоко 3%/i.test(String(row[9])), String(row[9]).slice(0, 60));
+check('сумма осталась прежней', row[2] === 1151.49, String(row[2]));
 
 console.log('\n=== Чек, присланный файлом ===');
 gemini({ receipt: () => ({ receipts: [{

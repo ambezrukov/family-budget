@@ -45,7 +45,11 @@ function geminiJson_(options) {
     contents: [{ role: 'user', parts: options.parts }],
     generationConfig: {
       temperature: options.temperature === undefined ? 0 : options.temperature,
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      // Чек из супермаркета на 66 позиций с ивритскими названиями — это
+      // несколько тысяч токенов ответа. По умолчанию модель обрывает вывод
+      // раньше, и список позиций возвращается пустым
+      maxOutputTokens: options.maxOutputTokens || 8192
     }
   };
   if (options.schema) body.generationConfig.responseSchema = options.schema;
@@ -640,6 +644,9 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
     '- Название магазина в поле store оставь как на чеке, а в storeRu дай ' +
     'привычное русское написание: «שופרסל» → «Шуферсаль», «רמי לוי» → «Рами Леви». ' +
     'Если название и так по-русски, storeRu оставь пустым.\n' +
+    '- Перечисли ВСЕ позиции чека, сколько бы их ни было: длинный чек из ' +
+    'супермаркета на полсотни строк нужно вернуть целиком, не сокращая ' +
+    'и не заменяя часть словами «и другие».\n' +
     '- Если позиции не читаются — верни пустой список.\n' +
     '- Категорию выбери из списка: ' + categories.join(', ') + '. ' +
     'Если ничего не подходит — «Без категории».\n' +
@@ -652,15 +659,73 @@ function geminiParseReceipt_(base64Image, mimeType, caption) {
       'для выбора категории и описания.';
   }
 
-  return geminiJson_({
+  var answer = geminiJson_({
     model: modelForMedia_(),
     systemInstruction: 'Ты помощник семейного учёта расходов. Отвечай только строгим JSON по заданной схеме.',
     parts: [
       { text: prompt },
       { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
     ],
-    schema: schemaReceiptList_()
+    schema: schemaReceiptList_(),
+    maxOutputTokens: 32768
   });
+
+  // Бывает, что сумму модель разобрала, а список позиций вернула пустым — на
+  // длинном чеке это обычно значит, что она сдалась на полпути. Спрашиваем
+  // ещё раз, коротко и только про позиции
+  if (answer && answer.receipts && answer.receipts.length === 1) {
+    var receipt = answer.receipts[0];
+    if (receipt.readable && receipt.total > 0 && (!receipt.items || !receipt.items.length)) {
+      var items = geminiReceiptItems_(base64Image, mimeType);
+      if (items && items.length) {
+        receipt.items = items;
+        logEvent_('Позиции чека дозапрошены отдельно', { позиций: items.length });
+      }
+    }
+  }
+
+  return answer;
+}
+
+/**
+ * Отдельный запрос только за позициями чека.
+ *
+ * Короткий запрос без остальных правил укладывается в предел вывода там, где
+ * полный разбор обрывался: модели остаётся выписать один список.
+ */
+function geminiReceiptItems_(base64Image, mimeType) {
+  var answer = geminiJson_({
+    model: modelForMedia_(),
+    systemInstruction: 'Отвечай только строгим JSON по заданной схеме.',
+    parts: [
+      { text: 'Выпиши ВСЕ позиции этого чека по порядку, ничего не пропуская. ' +
+        'В поле name — название по-русски, в original — как написано на чеке, ' +
+        'в price — цена позиции числом. Итоговую строку чека и залог за тару ' +
+        'в список не включай.' },
+      { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
+    ],
+    schema: {
+      type: 'OBJECT',
+      properties: {
+        items: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              name: { type: 'STRING' },
+              original: { type: 'STRING' },
+              price: { type: 'NUMBER' }
+            },
+            required: ['name']
+          }
+        }
+      },
+      required: ['items']
+    },
+    maxOutputTokens: 32768
+  });
+
+  return answer && answer.items ? answer.items : null;
 }
 
 /**

@@ -908,6 +908,10 @@ function handleReceipt_(message, fileId, sourceType) {
   var caption = String(message.caption || '').trim();
   var kind = sourceType || 'фото';
 
+  // Телеграм иногда подставляет в подпись само имя файла. Уточнением для
+  // категории «2_5208959065555772963.pdf» не является — только сбивает
+  if (/^[\w.\-]+\.(pdf|jpe?g|png|heic|webp)$/i.test(caption)) caption = '';
+
   tgSendChatAction_(chatId, 'typing');
 
   var file = tgDownloadFile_(fileId);
