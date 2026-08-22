@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.8.0';
+var BOT_VERSION = '1.8.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -2674,6 +2674,7 @@ function helpText_() {
     '/dohody — доходы за месяц и сколько осталось',
     '/otchet — отчёт за прошлый месяц',
     '/import — разобрать выписки из папки «Выписки» на Диске',
+    '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
     '/spravka — эта справка',
     '/imya — как подписывать меня в таблице («/imya Толя»);',
     '   имя жены или мужа — «/imya 673335047 = Маша»',
@@ -3139,6 +3140,9 @@ function handleCommand_(message, text) {
       return;
     case '/spravochnik':
       handleDirectoryUpload_(message, text);
+      return;
+    case '/uchet':
+      handleAccountingStart_(message, text);
       return;
     case '/versiya':
     case '/version':
@@ -5118,6 +5122,10 @@ function setupSpreadsheet() {
     settings.setColumnWidth(1, 240);
     settings.setColumnWidth(2, 200);
     settings.setColumnWidth(3, 520);
+  } else {
+    // Настройки, появившиеся в новых версиях, дописываем в существующий лист:
+    // иначе о них узнаёт только тот, кто заводит таблицу с нуля
+    addMissingSettings_(settings);
   }
 
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
@@ -5175,6 +5183,28 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в лист «Настройки» параметры, которых там ещё нет.
+ * Существующие значения не трогает — они правлены руками.
+ */
+function addMissingSettings_(sheet) {
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 1).getValues().forEach(function (row) {
+      known[String(row[0]).trim()] = true;
+    });
+  }
+
+  var missing = defaultSettings_().filter(function (row) { return !known[row[0]]; });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  SETTINGS_CACHE_ = null;
+  logEvent_('Добавлены новые настройки', missing.map(function (row) { return row[0]; }).join(', '));
+  return missing.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -7347,9 +7377,8 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Excel бот теперь читает сам: файл .xlsx — это архив с таблицей внутри, и бот распаковывает его своими силами. Раньше он просил Google Диск преобразовать файл, а это упиралось в выключенный в проекте Drive API — барьер, который семье не преодолеть без консоли разработчика",
-  "Папка «Выписки» читается встроенным сервисом Диска: тоже без Drive API",
-  "Даты, которые Excel хранит числом, разбираются правильно"
+  "Настройки, появившиеся в новых версиях, дописываются в уже существующий лист «Настройки». Раньше их видел только тот, кто заводил таблицу с нуля, и строка «Учёт с» просто не появлялась",
+  "Дату начала учёта можно задать из чата: /uchet 15.08.2026. «/uchet» без даты покажет текущую, «/uchet сброс» снимет отсечку"
 ];
 
 
@@ -8316,6 +8345,45 @@ function handleDirectoryUpload_(message, text) {
 
   logEvent_('Справочник обновлён из чата', { лист: spec.name, записей: rows.length });
   tgSend_(chatId, 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');
+}
+
+/**
+ * Команда /uchet: с какой даты подтягивать строки выписок.
+ *
+ * Настройка живёт в таблице, но лезть туда ради одной даты неудобно, а без
+ * неё импорт затянет всю историю карты — включая месяцы, когда бюджет ещё
+ * не вели.
+ */
+function handleAccountingStart_(message, text) {
+  var chatId = message.chat.id;
+  var argument = String(text || '').replace(/^\/\S+\s*/, '').trim();
+
+  if (!argument) {
+    var current = String(setting_('Учёт с', '')).trim();
+    tgSend_(chatId, current
+      ? 'Строки выписок беру начиная с <b>' + escapeHtml_(current) + '</b>.\n' +
+        'Поменять: <code>/uchet 15.08.2026</code>'
+      : 'Дата начала учёта не задана — беру всё, что есть в выписке.\n' +
+        'Задать: <code>/uchet 15.08.2026</code>');
+    return;
+  }
+
+  if (/^(сброс|все|всё|clear)$/i.test(argument)) {
+    updateSetting_('Учёт с', '');
+    tgSend_(chatId, 'Хорошо, теперь беру все строки выписки, без отсечки по дате.');
+    return;
+  }
+
+  var date = parseStatementDate_(argument);
+  if (!date) {
+    tgSend_(chatId, 'Не понял дату. Напишите так: <code>/uchet 15.08.2026</code>');
+    return;
+  }
+
+  updateSetting_('Учёт с', formatDate_(date));
+  logEvent_('Задана дата начала учёта', { дата: formatDate_(date) });
+  tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
+    'импортироваться не будут.');
 }
 
 

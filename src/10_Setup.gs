@@ -153,6 +153,10 @@ function setupSpreadsheet() {
     settings.setColumnWidth(1, 240);
     settings.setColumnWidth(2, 200);
     settings.setColumnWidth(3, 520);
+  } else {
+    // Настройки, появившиеся в новых версиях, дописываем в существующий лист:
+    // иначе о них узнаёт только тот, кто заводит таблицу с нуля
+    addMissingSettings_(settings);
   }
 
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
@@ -210,6 +214,28 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в лист «Настройки» параметры, которых там ещё нет.
+ * Существующие значения не трогает — они правлены руками.
+ */
+function addMissingSettings_(sheet) {
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 1).getValues().forEach(function (row) {
+      known[String(row[0]).trim()] = true;
+    });
+  }
+
+  var missing = defaultSettings_().filter(function (row) { return !known[row[0]]; });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  SETTINGS_CACHE_ = null;
+  logEvent_('Добавлены новые настройки', missing.map(function (row) { return row[0]; }).join(', '));
+  return missing.length;
 }
 
 // ---------------------------------------------------------------------------

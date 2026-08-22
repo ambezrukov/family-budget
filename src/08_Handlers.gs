@@ -164,6 +164,9 @@ function handleCommand_(message, text) {
     case '/spravochnik':
       handleDirectoryUpload_(message, text);
       return;
+    case '/uchet':
+      handleAccountingStart_(message, text);
+      return;
     case '/versiya':
     case '/version':
       tgSend_(chatId, versionReport_());

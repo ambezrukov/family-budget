@@ -76,3 +76,42 @@ function handleDirectoryUpload_(message, text) {
   logEvent_('Справочник обновлён из чата', { лист: spec.name, записей: rows.length });
   tgSend_(chatId, 'Справочник «' + spec.name + '» обновлён: записей — <b>' + rows.length + '</b>.');
 }
+
+/**
+ * Команда /uchet: с какой даты подтягивать строки выписок.
+ *
+ * Настройка живёт в таблице, но лезть туда ради одной даты неудобно, а без
+ * неё импорт затянет всю историю карты — включая месяцы, когда бюджет ещё
+ * не вели.
+ */
+function handleAccountingStart_(message, text) {
+  var chatId = message.chat.id;
+  var argument = String(text || '').replace(/^\/\S+\s*/, '').trim();
+
+  if (!argument) {
+    var current = String(setting_('Учёт с', '')).trim();
+    tgSend_(chatId, current
+      ? 'Строки выписок беру начиная с <b>' + escapeHtml_(current) + '</b>.\n' +
+        'Поменять: <code>/uchet 15.08.2026</code>'
+      : 'Дата начала учёта не задана — беру всё, что есть в выписке.\n' +
+        'Задать: <code>/uchet 15.08.2026</code>');
+    return;
+  }
+
+  if (/^(сброс|все|всё|clear)$/i.test(argument)) {
+    updateSetting_('Учёт с', '');
+    tgSend_(chatId, 'Хорошо, теперь беру все строки выписки, без отсечки по дате.');
+    return;
+  }
+
+  var date = parseStatementDate_(argument);
+  if (!date) {
+    tgSend_(chatId, 'Не понял дату. Напишите так: <code>/uchet 15.08.2026</code>');
+    return;
+  }
+
+  updateSetting_('Учёт с', formatDate_(date));
+  logEvent_('Задана дата начала учёта', { дата: formatDate_(date) });
+  tgSend_(chatId, 'Готово. Строки выписок раньше <b>' + formatDate_(date) + '</b> ' +
+    'импортироваться не будут.');
+}

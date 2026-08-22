@@ -194,5 +194,23 @@ check('карты источника связаны с реестром',
   sources[0].cards.length === 2 && sources[0].cards[1].owner === 'Анатолий',
   JSON.stringify(sources[0].cards));
 
+console.log('\n=== Дата начала учёта командой ===');
+
+call('updateSetting_', 'Учёт с', '');
+call('handleAccountingStart_', { chat: { id: 1 }, from: { id: 1 } }, '/uchet 15.08.2026');
+check('дата записана в настройки', String(call('setting_', 'Учёт с', '')) === '15.08.2026',
+  String(call('setting_', 'Учёт с', '')));
+
+call('handleAccountingStart_', { chat: { id: 1 }, from: { id: 1 } }, '/uchet сброс');
+check('сброс убирает отсечку', String(call('setting_', 'Учёт с', '')) === '',
+  String(call('setting_', 'Учёт с', '')));
+
+// Настройка, появившаяся в новой версии, дописывается в существующий лист
+const settingsSheet = call('ensureSheet_', 'Настройки', ['Параметр', 'Значение', 'Пояснение']);
+const beforeAdd = settingsSheet.getLastRow();
+call('addMissingSettings_', settingsSheet);
+check('повторный проход ничего не дублирует', settingsSheet.getLastRow() === beforeAdd,
+  beforeAdd + ' → ' + settingsSheet.getLastRow());
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);
