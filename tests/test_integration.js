@@ -496,10 +496,22 @@ post({ message: msg({ document: { file_id: 'doc1', mime_type: 'image/png' } }) }
 row = lastRow();
 check('изображение-документ обработано как чек', row[2] === 55, String(row[2]));
 
-const beforePdf = rowsCount();
+// PDF — путь для чеков, чьи сайты не пускают бота: человек скачивает файл
+// сам и пересылает сюда.
+gemini({ receipt: () => ({ receipts: [{
+  total: 1151.49, currency: 'ILS', datetime: '', store: 'Рами Леви',
+  category: 'Продукты', subcategory: 'Супермаркет',
+  items: [], tips: 0, readable: true, note: ''
+}] }) });
 post({ message: msg({ document: { file_id: 'doc2', mime_type: 'application/pdf' } }) });
-check('не-изображение не записано', rowsCount() === beforePdf);
-check('бот объяснил, что умеет', /изображения/i.test(sent[sent.length - 1].text));
+row = lastRow();
+check('PDF-чек обработан', row[2] === 1151.49, String(row[2]));
+check('способ ввода — файл', row[11] === 'файл', String(row[11]));
+
+const beforeZip = rowsCount();
+post({ message: msg({ document: { file_id: 'doc3', mime_type: 'application/zip' } }) });
+check('неподходящий файл не записан', rowsCount() === beforeZip);
+check('бот объяснил, что умеет', /PDF/.test(sent[sent.length - 1].text));
 
 // --- 6. Кнопки ---------------------------------------------------------------
 console.log('\n=== Кнопки под записью ===');

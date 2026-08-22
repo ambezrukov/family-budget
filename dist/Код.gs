@@ -45,7 +45,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.5.9';
+var BOT_VERSION = '1.6.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -367,7 +367,7 @@ var EXPENSE_COLUMNS = [
   'Магазин',            // 9
   'Позиции чека',       // 10
   'Автор',              // 11
-  'Способ ввода',       // 12 — текст / голос / фото
+  'Способ ввода',       // 12 — текст / голос / фото / файл / ссылка
   'Исходный текст',     // 13 — сообщение или расшифровка голоса
   'Источник категории', // 14 — словарь / модель / вручную
   'Ссылка на файл',     // 15
@@ -2920,14 +2920,16 @@ function handleMessage_(message) {
     return;
   }
 
-  // Изображение, присланное файлом
+  // Чек, присланный файлом: снимок или PDF. PDF выручает там, где сайт
+  // магазина не пускает бота к странице чека, — «Рами Леви» отдаёт файл
+  // из браузера, и его достаточно переслать сюда.
   if (message.document) {
     var mime = String(message.document.mime_type || '');
-    if (mime.indexOf('image/') === 0) {
-      handleReceipt_(message, message.document.file_id);
+    if (mime.indexOf('image/') === 0 || mime === 'application/pdf') {
+      handleReceipt_(message, message.document.file_id, mime === 'application/pdf' ? 'файл' : 'фото');
     } else {
-      tgSend_(chatId, 'Пока умею читать только изображения чеков. ' +
-        'Пришлите фото или напишите сумму текстом.');
+      tgSend_(chatId, 'Пока умею читать снимки чеков и PDF. ' +
+        'Пришлите фотографию, файл PDF или напишите сумму текстом.');
     }
     return;
   }
@@ -3723,9 +3725,10 @@ function handleVoice_(message) {
 // Чеки
 // ---------------------------------------------------------------------------
 
-function handleReceipt_(message, fileId) {
+function handleReceipt_(message, fileId, sourceType) {
   var chatId = message.chat.id;
   var caption = String(message.caption || '').trim();
+  var kind = sourceType || 'фото';
 
   tgSendChatAction_(chatId, 'typing');
 
@@ -3751,7 +3754,7 @@ function handleReceipt_(message, fileId) {
   }
 
   processReceiptAnswer_(message, receipts, {
-    sourceType: 'фото',
+    sourceType: kind,
     fileLink: fileReference_(fileId),
     comment: caption,
     rawText: caption ? 'Подпись: ' + caption : ''
@@ -7100,5 +7103,7 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Чек «Рами Леви» бот пробует забрать PDF-файлом, если страницу сайт не отдал ни ему, ни посреднику: у чека есть версия для печати, а файлы защита пропускает охотнее, чем страницы"
+  "Бот принимает чеки файлом PDF, а не только снимками. Это обходной путь для магазинов, чьи сайты пускают к чеку только живой браузер: откройте ссылку на телефоне, нажмите «скачать PDF» и перешлите файл боту",
+  "Если ссылка на чек «Рами Леви» не открылась, бот сразу подсказывает этот путь",
+  "В таблице у таких записей способ ввода — «файл»"
 ];

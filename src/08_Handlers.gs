@@ -76,14 +76,16 @@ function handleMessage_(message) {
     return;
   }
 
-  // Изображение, присланное файлом
+  // Чек, присланный файлом: снимок или PDF. PDF выручает там, где сайт
+  // магазина не пускает бота к странице чека, — «Рами Леви» отдаёт файл
+  // из браузера, и его достаточно переслать сюда.
   if (message.document) {
     var mime = String(message.document.mime_type || '');
-    if (mime.indexOf('image/') === 0) {
-      handleReceipt_(message, message.document.file_id);
+    if (mime.indexOf('image/') === 0 || mime === 'application/pdf') {
+      handleReceipt_(message, message.document.file_id, mime === 'application/pdf' ? 'файл' : 'фото');
     } else {
-      tgSend_(chatId, 'Пока умею читать только изображения чеков. ' +
-        'Пришлите фото или напишите сумму текстом.');
+      tgSend_(chatId, 'Пока умею читать снимки чеков и PDF. ' +
+        'Пришлите фотографию, файл PDF или напишите сумму текстом.');
     }
     return;
   }
@@ -879,9 +881,10 @@ function handleVoice_(message) {
 // Чеки
 // ---------------------------------------------------------------------------
 
-function handleReceipt_(message, fileId) {
+function handleReceipt_(message, fileId, sourceType) {
   var chatId = message.chat.id;
   var caption = String(message.caption || '').trim();
+  var kind = sourceType || 'фото';
 
   tgSendChatAction_(chatId, 'typing');
 
@@ -907,7 +910,7 @@ function handleReceipt_(message, fileId) {
   }
 
   processReceiptAnswer_(message, receipts, {
-    sourceType: 'фото',
+    sourceType: kind,
     fileLink: fileReference_(fileId),
     comment: caption,
     rawText: caption ? 'Подпись: ' + caption : ''
