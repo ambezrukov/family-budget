@@ -48,7 +48,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.7.0';
+var BOT_VERSION = '1.7.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -6731,6 +6731,48 @@ function verifyTelegramInitData_(initData) {
 }
 
 /**
+ * Список источников для страницы загрузки выписок: кабинет, что скачивать и
+ * какие карты за ним стоят. Берётся из листов «Источники» и «Карты», чтобы
+ * ссылки и номера правились без изменения кода.
+ */
+function miniAppSources_() {
+  var sheet = ensureSheet_(SHEET_SOURCES, SOURCE_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+
+  var cards = readCards_();
+  var rows = sheet.getRange(2, 1, last - 1, SOURCE_COLUMNS.length).getValues();
+
+  return rows
+    .filter(function (row) { return String(row[0] || '').trim(); })
+    .sort(function (a, b) { return (Number(a[6]) || 99) - (Number(b[6]) || 99); })
+    .map(function (row) {
+      var digits = String(row[2] || '').split(/[,;]/)
+        .map(function (part) { return part.replace(/\D/g, ''); })
+        .filter(function (part) { return part; });
+
+      return {
+        name: String(row[0] || ''),
+        url: String(row[1] || ''),
+        what: String(row[3] || ''),
+        format: String(row[4] || ''),
+        howOften: String(row[5] || ''),
+        cards: digits.map(function (digit) {
+          var known = cards[digit];
+          return {
+            card: digit,
+            title: known ? known.title : '',
+            owner: known ? known.owner : '',
+            purpose: known ? known.purpose : '',
+            chargeDay: known ? known.chargeDay : '',
+            status: known ? known.status : ''
+          };
+        })
+      };
+    });
+}
+
+/**
  * Собирает данные для страницы.
  * monthKey — «ГГГГ-ММ»; пусто = текущий месяц.
  */
@@ -6787,6 +6829,9 @@ function miniAppPayload_(monthKey) {
     // Таблица — то место, где правят руками: категории, курсы, чужие ошибки.
     // Со страницы до неё раньше можно было добраться только через историю чата
     sheetUrl: getSpreadsheet_().getUrl(),
+    // Памятка «что откуда выгружать»: раз в неделю нужно обойти четыре
+    // кабинета, и держать этот список в голове незачем
+    sources: miniAppSources_(),
     month: currentKey,
     monthTitle: monthTitle_(month),
     months: months.slice(0, 24),
@@ -7297,13 +7342,7 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Бот принимает выписки банка и карточных компаний: Excel или CSV, файлом в чат или папкой «Выписки» на Диске рядом с таблицей (команда /import). Источник узнаёт сам — по названиям столбцов, а не по имени файла",
-  "Строки ложатся в новый лист «Операции»: дата покупки и дата списания, карта, владелец, магазин, исходная валюта для заграничных покупок",
-  "Повторная загрузка того же файла ничего не задваивает: у Isracard ключом служит номер ваучера, у остальных — дата, карта, магазин и сумма",
-  "Общее месячное списание по карте в банковской выписке помечается «не трата»: покупки по этой карте уже пришли из выгрузки эмитента",
-  "Настройка «Учёт с» отсекает строки, которые старше начала учёта",
-  "Похожие траты (та же сумма, дата в пределах трёх дней) бот показывает кнопкой «Одно и то же?» — решает человек, вслепую никто ничего не склеивает",
-  "Новые листы «Карты» и «Источники»: реестр карт и памятка, что и откуда выгружать. Заполняются руками — это личные данные"
+  "На странице «Бюджет» появилась памятка «Откуда брать выписки»: четыре кабинета со ссылками, что именно скачивать и какие карты за каждым стоят. Список берётся из листов «Источники» и «Карты», правится без кода"
 ];
 
 

@@ -102,6 +102,48 @@ function verifyTelegramInitData_(initData) {
 }
 
 /**
+ * Список источников для страницы загрузки выписок: кабинет, что скачивать и
+ * какие карты за ним стоят. Берётся из листов «Источники» и «Карты», чтобы
+ * ссылки и номера правились без изменения кода.
+ */
+function miniAppSources_() {
+  var sheet = ensureSheet_(SHEET_SOURCES, SOURCE_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+
+  var cards = readCards_();
+  var rows = sheet.getRange(2, 1, last - 1, SOURCE_COLUMNS.length).getValues();
+
+  return rows
+    .filter(function (row) { return String(row[0] || '').trim(); })
+    .sort(function (a, b) { return (Number(a[6]) || 99) - (Number(b[6]) || 99); })
+    .map(function (row) {
+      var digits = String(row[2] || '').split(/[,;]/)
+        .map(function (part) { return part.replace(/\D/g, ''); })
+        .filter(function (part) { return part; });
+
+      return {
+        name: String(row[0] || ''),
+        url: String(row[1] || ''),
+        what: String(row[3] || ''),
+        format: String(row[4] || ''),
+        howOften: String(row[5] || ''),
+        cards: digits.map(function (digit) {
+          var known = cards[digit];
+          return {
+            card: digit,
+            title: known ? known.title : '',
+            owner: known ? known.owner : '',
+            purpose: known ? known.purpose : '',
+            chargeDay: known ? known.chargeDay : '',
+            status: known ? known.status : ''
+          };
+        })
+      };
+    });
+}
+
+/**
  * Собирает данные для страницы.
  * monthKey — «ГГГГ-ММ»; пусто = текущий месяц.
  */
@@ -158,6 +200,9 @@ function miniAppPayload_(monthKey) {
     // Таблица — то место, где правят руками: категории, курсы, чужие ошибки.
     // Со страницы до неё раньше можно было добраться только через историю чата
     sheetUrl: getSpreadsheet_().getUrl(),
+    // Памятка «что откуда выгружать»: раз в неделю нужно обойти четыре
+    // кабинета, и держать этот список в голове незачем
+    sources: miniAppSources_(),
     month: currentKey,
     monthTitle: monthTitle_(month),
     months: months.slice(0, 24),

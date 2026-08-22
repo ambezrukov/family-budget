@@ -251,6 +251,41 @@
 
   .empty { color: var(--ink-muted); font-size: 0.92rem; }
 
+  /* ---------- Загрузка выписок ---------- */
+  .src { border-top: 1px solid var(--line); padding: 0.7rem 0; }
+  .src:first-of-type { border-top: none; }
+  .src-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .src-name { font-size: 0.95rem; font-weight: 600; }
+  .src-open {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .src-what { font-size: 0.85rem; color: var(--ink-muted); margin-top: 0.25rem; }
+  .src-cards { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .src-card {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 99px;
+    padding: 0.05rem 0.5rem;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .card details > summary {
+    cursor: pointer;
+    list-style: none;
+    color: var(--accent);
+    font-size: 0.9rem;
+  }
+  .card details > summary::-webkit-details-marker { display: none; }
+  .card details[open] > summary { margin-bottom: 0.6rem; }
+
   /* ---------- Подвал ---------- */
   .foot {
     margin: 0.2rem 0 0.4rem;
@@ -422,6 +457,36 @@
       '" data-sheet target="_blank" rel="noopener">Открыть таблицу бюджета</a></div>';
   }
 
+  // Памятка обхода кабинетов: раз в неделю нужно забрать четыре файла, и
+  // держать в голове, где какая кнопка, незачем. Свёрнута, чтобы не мешать.
+  function sourcesCard(data) {
+    if (!data.sources || !data.sources.length) return '';
+
+    var items = data.sources.map(function (src) {
+      var cards = (src.cards || []).map(function (card) {
+        var hint = [card.owner, card.title].filter(Boolean).join(' · ');
+        return '<span class="src-card" title="' + escapeHtml(hint) + '">' +
+          escapeHtml(card.card) + (card.owner ? ' ' + escapeHtml(card.owner) : '') + '</span>';
+      }).join('');
+
+      return '<div class="src">' +
+        '<div class="src-head"><span class="src-name">' + escapeHtml(src.name) + '</span>' +
+        (src.url ? '<a class="src-open" href="' + escapeHtml(src.url) +
+          '" data-sheet target="_blank" rel="noopener">кабинет →</a>' : '') +
+        '</div>' +
+        (src.what ? '<div class="src-what">' + escapeHtml(src.what) + '</div>' : '') +
+        (cards ? '<div class="src-cards">' + cards + '</div>' : '') +
+        '</div>';
+    }).join('');
+
+    return '<div class="card"><details><summary>Откуда брать выписки</summary>' +
+      items +
+      '<div class="src-what" style="margin-top:0.7rem">Файлы сложите в папку ' +
+      '«Выписки» рядом с таблицей и напишите боту /import — либо пришлите ' +
+      'каждый файл прямо в чат.</div>' +
+      '</details></div>';
+  }
+
   function render(data) {
     state.data = data;
 
@@ -481,6 +546,7 @@
         incomeCard(data) +
         authors +
         '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
+        sourcesCard(data) +
         sheetLink(data) +
       '</div>';
   }
