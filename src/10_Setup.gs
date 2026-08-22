@@ -29,6 +29,10 @@ function starterIncomeCategories_() {
     ['Продажа вещей', '', 'продал, продали, продажа, яд шния, авито, olx'],
     ['Пособия и выплаты', '', 'пособи, битуах леуми, выплат, компенсаци, пенси, стипенди, ביטוח לאומי'],
     ['Возврат налогов', '', 'налог, возврат налог, мас ахнаса, מס הכנסה'],
+    // Деньги, пришедшие в Израиле взамен рублей, переведённых в России.
+    // Для израильского контура это приход, хотя в назначении платежа
+    // человек напишет «возврат долга»
+    ['Обменные операции', '', 'обмен, обменн, החזר חוב, החזר כספים, החזר, возврат долга, возврат средств'],
     ['Прочие доходы', '', '']
   ];
 }
@@ -159,6 +163,8 @@ function setupSpreadsheet() {
     addMissingSettings_(settings);
   }
 
+  addMissingIncomeCategories_();
+
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
   // и без напоминания о новых версиях никто не узнает
   try {
@@ -214,6 +220,30 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в справочник доходов категории, появившиеся в новых версиях.
+ * Существующие строки не трогает — они правлены руками.
+ */
+function addMissingIncomeCategories_() {
+  var sheet = ensureSheet_(SHEET_INCOME_CATEGORIES, CATEGORY_COLUMNS);
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 1).getValues().forEach(function (row) {
+      known[String(row[0]).trim()] = true;
+    });
+  }
+
+  var missing = starterIncomeCategories_().filter(function (row) { return !known[row[0]]; });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  INCOME_CATEGORIES_CACHE_ = null;
+  logEvent_('Добавлены новые категории доходов',
+    missing.map(function (row) { return row[0]; }).join(', '));
+  return missing.length;
 }
 
 /**

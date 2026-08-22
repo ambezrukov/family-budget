@@ -336,6 +336,24 @@ check('после ответа повторно не спрашивают',
   call('pendingIncomeOperations_').length === pendingBefore,
   pendingBefore + ' vs ' + call('pendingIncomeOperations_').length);
 
+console.log('\n=== Обменные операции ===');
+
+// Деньги, пришедшие в Израиле взамен рублей, переведённых в России. В
+// назначении платежа человек пишет «возврат долга», но для израильского
+// контура это приход — и у него своя статья
+call('addMissingIncomeCategories_');
+check('категория заведена',
+  call('incomeCategoryNames_').indexOf('Обменные операции') !== -1,
+  JSON.stringify(call('incomeCategoryNames_')));
+check('повторный проход не дублирует',
+  call('addMissingIncomeCategories_') === 0, 'добавлено снова');
+check('«возврат долга» попадает в обменные операции',
+  call('resolveIncomeCategory_', '', 'העברה-נייד עבור: החזר חוב').category === 'Обменные операции',
+  call('resolveIncomeCategory_', '', 'העברה-נייד עבור: החזר חוב').category);
+check('зарплата осталась зарплатой',
+  call('resolveIncomeCategory_', '', 'משכורת').category === 'Зарплата',
+  call('resolveIncomeCategory_', '', 'משכורת').category);
+
 console.log('\n=== Иврит с переводом ===');
 
 check('перевод через приложение', call('withRussianHint_', 'העברה-נייד') ===

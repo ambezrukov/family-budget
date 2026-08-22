@@ -61,15 +61,13 @@ function offerIncomeCandidates_(chatId) {
       op.note ? escapeHtml_(withRussianHint_(shorten_(op.note, 120))) : ''
     ].filter(function (line) { return line; }).join('\n');
 
-    // «החזר חוב», «החזר כספים» — возврат долга или средств. Деньги пришли,
-    // но заработаны не были, поэтому такую кнопку показываем первой
-    var looksLikeRefund = /החזר|возврат|долг/i.test(op.merchant + ' ' + op.note);
-    var incomeButton = { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id };
-    var transferButton = { text: '↔️ Перевод', callback_data: 'ninc:' + op.id };
-
-    tgSend_(chatId, text, [looksLikeRefund
-      ? [transferButton, incomeButton]
-      : [incomeButton, transferButton]]);
+    // Порядок кнопок обычный: категорию бот уже подобрал и показывает на
+    // кнопке, так что видно, куда пойдёт запись — «Зарплата» это или
+    // «Обменные операции»
+    tgSend_(chatId, text, [[
+      { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id },
+      { text: '↔️ Перевод', callback_data: 'ninc:' + op.id }
+    ]]);
   });
 
   if (pending.length > shown.length) {

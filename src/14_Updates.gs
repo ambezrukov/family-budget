@@ -280,6 +280,16 @@ function announceVersionChange_() {
 
   PropertiesService.getScriptProperties().setProperty(PROP_RUNNING_VERSION, BOT_VERSION);
 
+  // Новая версия могла принести новые настройки и категории. Дописываем их
+  // в существующие листы сами: иначе о них узнаёт только тот, кто заводит
+  // таблицу заново, а остальные молча живут без них
+  try {
+    addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
+    addMissingIncomeCategories_();
+  } catch (err) {
+    logEvent_('Не удалось дописать справочники', String(err));
+  }
+
   // Список берём из кода, а не с GitHub: рассказ бота о самом себе не должен
   // зависеть от сети, а репозиторий сразу после выпуска ещё отдаёт из кэша
   // прежнюю версию — список оказался бы пустым

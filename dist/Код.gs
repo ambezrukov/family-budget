@@ -51,7 +51,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.11.0';
+var BOT_VERSION = '1.11.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -5294,6 +5294,10 @@ function starterIncomeCategories_() {
     ['Продажа вещей', '', 'продал, продали, продажа, яд шния, авито, olx'],
     ['Пособия и выплаты', '', 'пособи, битуах леуми, выплат, компенсаци, пенси, стипенди, ביטוח לאומי'],
     ['Возврат налогов', '', 'налог, возврат налог, мас ахнаса, מס הכנסה'],
+    // Деньги, пришедшие в Израиле взамен рублей, переведённых в России.
+    // Для израильского контура это приход, хотя в назначении платежа
+    // человек напишет «возврат долга»
+    ['Обменные операции', '', 'обмен, обменн, החזר חוב, החזר כספים, החזר, возврат долга, возврат средств'],
     ['Прочие доходы', '', '']
   ];
 }
@@ -5424,6 +5428,8 @@ function setupSpreadsheet() {
     addMissingSettings_(settings);
   }
 
+  addMissingIncomeCategories_();
+
   // Еженедельная проверка обновлений: код лежит копией в проекте каждой семьи,
   // и без напоминания о новых версиях никто не узнает
   try {
@@ -5479,6 +5485,30 @@ function setupSpreadsheet() {
   var message = 'Готово. Таблица: ' + ss.getUrl();
   console.log(message);
   return message;
+}
+
+/**
+ * Дописывает в справочник доходов категории, появившиеся в новых версиях.
+ * Существующие строки не трогает — они правлены руками.
+ */
+function addMissingIncomeCategories_() {
+  var sheet = ensureSheet_(SHEET_INCOME_CATEGORIES, CATEGORY_COLUMNS);
+  var last = sheet.getLastRow();
+  var known = {};
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 1).getValues().forEach(function (row) {
+      known[String(row[0]).trim()] = true;
+    });
+  }
+
+  var missing = starterIncomeCategories_().filter(function (row) { return !known[row[0]]; });
+  if (!missing.length) return 0;
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 3).setValues(missing);
+  INCOME_CATEGORIES_CACHE_ = null;
+  logEvent_('Добавлены новые категории доходов',
+    missing.map(function (row) { return row[0]; }).join(', '));
+  return missing.length;
 }
 
 /**
@@ -7604,6 +7634,16 @@ function announceVersionChange_() {
 
   PropertiesService.getScriptProperties().setProperty(PROP_RUNNING_VERSION, BOT_VERSION);
 
+  // Новая версия могла принести новые настройки и категории. Дописываем их
+  // в существующие листы сами: иначе о них узнаёт только тот, кто заводит
+  // таблицу заново, а остальные молча живут без них
+  try {
+    addMissingSettings_(ensureSheet_(SHEET_SETTINGS, SETTINGS_COLUMNS));
+    addMissingIncomeCategories_();
+  } catch (err) {
+    logEvent_('Не удалось дописать справочники', String(err));
+  }
+
   // Список берём из кода, а не с GitHub: рассказ бота о самом себе не должен
   // зависеть от сети, а репозиторий сразу после выпуска ещё отдаёт из кэша
   // прежнюю версию — список оказался бы пустым
@@ -7673,9 +7713,8 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Ивритские названия из выписки бот показывает с русским пояснением: «העברה-נייד (перевод через приложение)», «זיכוי מלאומי (зачисление из «Леуми»)», «החזר חוב (возврат долга)». Оригинал остаётся на месте — по нему сверяются с выпиской, а пояснение снимает вопрос «что это было»",
-  "Пояснение попадает и в запись дохода, и в вопрос перед записью, и в графу «Заметки» листа «Операции», если банк своего примечания не оставил",
-  "Незнакомые названия — магазины, имена людей — остаются как есть: переводить их незачем, они и на иврите узнаются"
+  "В справочнике доходов появилась статья «Обменные операции»: деньги, пришедшие в Израиле взамен рублей, переведённых в России. В назначении платежа такой перевод выглядит как «возврат долга», но для израильского учёта это приход, и мешать его с зарплатой не стоит",
+  "Новые настройки и категории дописываются в таблицу сами при обновлении бота — раньше их видел только тот, кто заводил таблицу с нуля"
 ];
 
 
@@ -9180,15 +9219,13 @@ function offerIncomeCandidates_(chatId) {
       op.note ? escapeHtml_(withRussianHint_(shorten_(op.note, 120))) : ''
     ].filter(function (line) { return line; }).join('\n');
 
-    // «החזר חוב», «החזר כספים» — возврат долга или средств. Деньги пришли,
-    // но заработаны не были, поэтому такую кнопку показываем первой
-    var looksLikeRefund = /החזר|возврат|долг/i.test(op.merchant + ' ' + op.note);
-    var incomeButton = { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id };
-    var transferButton = { text: '↔️ Перевод', callback_data: 'ninc:' + op.id };
-
-    tgSend_(chatId, text, [looksLikeRefund
-      ? [transferButton, incomeButton]
-      : [incomeButton, transferButton]]);
+    // Порядок кнопок обычный: категорию бот уже подобрал и показывает на
+    // кнопке, так что видно, куда пойдёт запись — «Зарплата» это или
+    // «Обменные операции»
+    tgSend_(chatId, text, [[
+      { text: '💰 Доход · ' + guess.category, callback_data: 'inc:' + op.id },
+      { text: '↔️ Перевод', callback_data: 'ninc:' + op.id }
+    ]]);
   });
 
   if (pending.length > shown.length) {
