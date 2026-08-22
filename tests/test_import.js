@@ -134,6 +134,36 @@ if (pairs.length) {
   check('после склейки пара не предлагается снова', call('findMergeCandidates_').length === 0);
 }
 
+console.log('\n=== Excel читаем сами, без Google Диска ===');
+
+// Кусок настоящего файла банка: даты лежат числами, текст — в отдельном
+// словаре, на который ячейки ссылаются номерами
+const sheetPlain = '<worksheet><sheetData>' +
+  '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>' +
+  '<row r="2"><c r="A2"><v>46250</v></c><c r="B2" t="s"><v>2</v></c>' +
+  '<c r="D2"><v>2585.93</v></c></row>' +
+  '</sheetData></worksheet>';
+const sharedPlain = '<sst><si><t>תאריך</t></si><si><t>הפעולה</t></si>' +
+  '<si><t>מסטרקרד</t></si></sst>';
+
+const plainRows = call('xlsxRowsFromParts_', sheetPlain, sharedPlain);
+check('строки прочитаны', plainRows.length === 2, String(plainRows.length));
+check('слова подставлены из словаря', plainRows[0][0] === 'תאריך', String(plainRows[0][0]));
+check('пропущенная ячейка не сдвигает столбцы', plainRows[1][3] === 2585.93,
+  JSON.stringify(plainRows[1]));
+check('дата-число превращается в дату',
+  call('formatDate_', call('parseStatementDate_', 46250)) === '16.08.2026',
+  call('formatDate_', call('parseStatementDate_', 46250)));
+
+// Isracard выгружает XML с приставками пространства имён — «<x:row>»
+const sheetNs = '<x:worksheet xmlns:x="..."><x:sheetData>' +
+  '<x:row r="1"><x:c r="A1" t="s"><x:v>0</x:v></x:c></x:row>' +
+  '</x:sheetData></x:worksheet>';
+const sharedNs = '<x:sst><x:si><x:t>תאריך רכישה</x:t></x:si></x:sst>';
+const nsRows = call('xlsxRowsFromParts_', sheetNs, sharedNs);
+check('файл с приставками тоже читается',
+  nsRows.length === 1 && nsRows[0][0] === 'תאריך רכישה', JSON.stringify(nsRows));
+
 console.log('\n=== Справочники из чата ===');
 
 const cardsMessage = [

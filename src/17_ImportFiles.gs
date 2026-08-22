@@ -4,9 +4,9 @@
  * Два пути, оба нужны: файл в чат (быстро, с телефона) и папка на Google
  * Диске рядом с таблицей (удобно, когда за раз выгружено четыре файла).
  *
- * Excel скрипт сам читать не умеет, поэтому файл заливается на Диск с
- * просьбой преобразовать его в Google Таблицу, читается — и копия удаляется.
- * Для этого у скрипта есть права: читать файлы Диска и создавать свои.
+ * Excel бот разбирает сам (см. 20_Xlsx.gs), поэтому для файла из чата Диск
+ * не нужен вовсе. Доступ к Диску нужен только для второго пути — забрать
+ * файлы из папки «Выписки», и берётся он встроенным сервисом DriveApp.
  */
 
 var DRIVE_FILES_API_ = 'https://www.googleapis.com/drive/v3/files';
@@ -86,8 +86,17 @@ function rowsFromStatementBlob_(blob, fileName) {
   var type = String(blob.getContentType() || '').toLowerCase();
 
   if (name.indexOf('.csv') !== -1 || type.indexOf('csv') !== -1) return rowsFromCsv_(blob);
+
   if (/\.xlsx?$/.test(name) || type.indexOf('spreadsheet') !== -1 || type.indexOf('excel') !== -1) {
-    return rowsFromExcel_(blob, fileName);
+    // Свой разбор архива — основной путь: он не зависит ни от прав на Диск,
+    // ни от того, включён ли Drive API в проекте скрипта
+    try {
+      var rows = xlsxRows_(blob);
+      if (rows && rows.length) return rows;
+    } catch (err) {
+      logEvent_('Не разобрал Excel своими силами', { файл: fileName, ошибка: String(err) });
+    }
+    return rowsFromExcel_(blob, fileName); // запасной путь через Диск
   }
   return null;
 }
@@ -126,9 +135,9 @@ function handleStatementDocument_(message, document) {
   }
 
   if (!rows || !rows.length) {
-    tgSend_(chatId, 'Не смог прочитать файл. Excel я читаю через Google Диск — ' +
-      'если бот ещё не получил к нему доступ, выгрузите выписку в CSV или запустите ' +
-      'в редакторе скрипта функцию <code>authorizeDrive</code>.');
+    tgSend_(chatId, 'Не смог прочитать файл: не нашёл в нём таблицы с данными. ' +
+      'Проверьте, что это выгрузка операций, а не сводка или PDF, — ' +
+      'или пришлите её в CSV.');
     return;
   }
 
@@ -143,24 +152,25 @@ function handleStatementDocument_(message, document) {
  */
 function statementsFolder_() {
   var folderName = String(setting_('Папка выписок', 'Выписки')).trim() || 'Выписки';
-  var spreadsheetId = getSpreadsheet_().getId();
 
-  var meta = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId +
-    '?fields=parents&supportsAllDrives=true', {});
-  if (meta.getResponseCode() !== 200) return { error: 'Нет доступа к Диску' };
+  // DriveApp — встроенный сервис Apps Script: в отличие от обращения к
+  // Drive API напрямую, он работает без включения этого API в консоли Google
+  try {
+    var parents = DriveApp.getFileById(getSpreadsheet_().getId()).getParents();
+    if (!parents.hasNext()) return { error: 'Не понял, в какой папке лежит таблица' };
 
-  var parents = JSON.parse(meta.getContentText()).parents || [];
-  if (!parents.length) return { error: 'Не понял, в какой папке лежит таблица' };
+    var parent = parents.next();
+    var folders = parent.getFoldersByName(folderName);
+    if (!folders.hasNext()) {
+      return { error: 'Папки «' + folderName + '» рядом с таблицей нет' };
+    }
 
-  var query = "name='" + folderName.replace(/'/g, "\\'") + "' and '" + parents[0] +
-    "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
-  var found = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) +
-    '&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true', {});
-  if (found.getResponseCode() !== 200) return { error: 'Не удалось найти папку' };
-
-  var files = JSON.parse(found.getContentText()).files || [];
-  if (!files.length) return { error: 'Папки «' + folderName + '» рядом с таблицей нет', parent: parents[0] };
-  return { id: files[0].id, name: files[0].name };
+    var folder = folders.next();
+    return { folder: folder, id: folder.getId(), name: folder.getName() };
+  } catch (err) {
+    logEvent_('Диск недоступен', String(err));
+    return { error: 'Нет доступа к Диску: ' + err };
+  }
 }
 
 /**
@@ -189,55 +199,46 @@ function importFromFolder_(chatId) {
     return;
   }
 
-  var query = "'" + folder.id + "' in parents and trashed=false";
-  var response = driveRequest_(DRIVE_FILES_API_ + '?q=' + encodeURIComponent(query) +
-    '&fields=files(id,name,mimeType,modifiedTime,md5Checksum)&orderBy=name' +
-    '&supportsAllDrives=true&includeItemsFromAllDrives=true', {});
-  if (response.getResponseCode() !== 200) {
-    tgSend_(chatId, 'Не смог заглянуть в папку «' + escapeHtml_(folder.name) + '».');
-    return;
+  var done = importedFileKeys_();
+  var fresh = [];
+  var files = folder.folder.getFiles();
+
+  while (files.hasNext()) {
+    var file = files.next();
+    if (!looksLikeStatement_(file.getName(), file.getMimeType())) continue;
+    // Ключ учитывает время правки: обновлённый файл разбираем заново, а
+    // повторы всё равно отсеются на уровне отдельных операций
+    var key = 'drive:' + file.getId() + ':' + file.getLastUpdated().getTime();
+    if (done[key]) continue;
+    fresh.push({ file: file, key: key });
   }
 
-  var files = JSON.parse(response.getContentText()).files || [];
-  var done = importedFileKeys_();
-  var fresh = files.filter(function (file) {
-    return looksLikeStatement_(file.name, file.mimeType) &&
-      !done['drive:' + (file.md5Checksum || file.id)];
-  });
-
   if (!fresh.length) {
-    tgSend_(chatId, files.length
-      ? 'В папке «' + escapeHtml_(folder.name) + '» всё уже разобрано.'
-      : 'Папка «' + escapeHtml_(folder.name) + '» пуста.');
+    tgSend_(chatId, 'В папке «' + escapeHtml_(folder.name) + '» нового нет.');
     return;
   }
 
   tgSend_(chatId, 'Разбираю файлов: ' + fresh.length + '…');
 
   var added = 0;
-  fresh.forEach(function (file) {
-    var content = driveRequest_(DRIVE_FILES_API_ + '/' + file.id + '?alt=media', {});
-    if (content.getResponseCode() !== 200) {
-      tgSend_(chatId, '<b>' + escapeHtml_(file.name) + '</b>\nНе смог скачать файл с Диска.');
-      return;
-    }
-
+  fresh.forEach(function (item) {
+    var name = item.file.getName();
     var rows;
     try {
-      rows = rowsFromStatementBlob_(content.getBlob().setName(file.name), file.name);
+      rows = rowsFromStatementBlob_(item.file.getBlob(), name);
     } catch (err) {
-      logEvent_('Сбой чтения выписки с Диска', { файл: file.name, ошибка: String(err) });
+      logEvent_('Сбой чтения выписки с Диска', { файл: name, ошибка: String(err) });
       rows = null;
     }
 
     if (!rows || !rows.length) {
-      tgSend_(chatId, '<b>' + escapeHtml_(file.name) + '</b>\nНе смог прочитать файл.');
+      tgSend_(chatId, '<b>' + escapeHtml_(name) + '</b>\nНе смог прочитать файл.');
       return;
     }
 
-    var result = importStatementRows_(rows, file.name, 'drive:' + (file.md5Checksum || file.id));
+    var result = importStatementRows_(rows, name, item.key);
     if (result.ok) added += result.stats.added;
-    tgSend_(chatId, importReportText_(file.name, result));
+    tgSend_(chatId, importReportText_(name, result));
   });
 
   if (added) offerMergeCandidates_(chatId);
@@ -251,38 +252,20 @@ function importFromFolder_(chatId) {
 function authorizeDrive() {
   var lines = [];
 
-  // Права смотрим у самого Google: манифест может обещать что угодно, а
-  // значение имеет только то, что человек действительно разрешил в окне согласия
-  var scopes = '';
+  lines.push('Excel бот читает сам, без Диска — для файлов из чата доступ не нужен.');
+
   try {
-    var info = UrlFetchApp.fetch(
-      'https://oauth2.googleapis.com/tokeninfo?access_token=' +
-      encodeURIComponent(ScriptApp.getOAuthToken()),
-      { muteHttpExceptions: true }
-    );
-    scopes = info.getResponseCode() === 200
-      ? String(JSON.parse(info.getContentText()).scope || '')
-      : 'не удалось спросить (' + info.getResponseCode() + ')';
+    var parents = DriveApp.getFileById(getSpreadsheet_().getId()).getParents();
+    lines.push('Доступ к Диску: есть');
+    lines.push(parents.hasNext()
+      ? 'Таблица лежит в папке: ' + parents.next().getName()
+      : 'Таблица не лежит ни в одной папке');
   } catch (err) {
-    scopes = 'ошибка: ' + err;
+    lines.push('Доступ к Диску: НЕТ (' + err + ')');
   }
 
-  lines.push('Права токена: ' + scopes);
-  lines.push('Право читать Диск: ' + (scopes.indexOf('drive') !== -1 ? 'есть' : 'НЕТ'));
-
-  var spreadsheetId = getSpreadsheet_().getId();
-  var probe = driveRequest_(DRIVE_FILES_API_ + '/' + spreadsheetId +
-    '?fields=name,parents&supportsAllDrives=true', {});
-  lines.push('Ответ Диска на запрос о таблице: ' + probe.getResponseCode());
-  if (probe.getResponseCode() !== 200) {
-    lines.push('Что ответил Google: ' + probe.getContentText().substring(0, 300));
-  } else {
-    var data = JSON.parse(probe.getContentText());
-    lines.push('Таблица: ' + data.name + ', папок-родителей: ' + ((data.parents || []).length));
-
-    var folder = statementsFolder_();
-    lines.push(folder.error ? 'Папка выписок: ' + folder.error : 'Папка выписок найдена: ' + folder.name);
-  }
+  var folder = statementsFolder_();
+  lines.push(folder.error ? 'Папка выписок: ' + folder.error : 'Папка выписок найдена: ' + folder.name);
 
   var message = lines.join('\n');
   console.log(message);

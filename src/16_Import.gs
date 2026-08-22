@@ -140,6 +140,9 @@ function parseStatementDate_(value) {
   if (!value && value !== 0) return null;
   if (Object.prototype.toString.call(value) === '[object Date]') return value;
 
+  // Из файла Excel, прочитанного без Google Диска, даты приходят числом
+  if (typeof value === 'number') return excelSerialToDate_(value);
+
   var text = String(value).trim();
   if (!text) return null;
 
