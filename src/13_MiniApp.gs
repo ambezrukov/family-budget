@@ -155,6 +155,9 @@ function miniAppPayload_(monthKey) {
   return {
     ok: true,
     currency: base,
+    // Таблица — то место, где правят руками: категории, курсы, чужие ошибки.
+    // Со страницы до неё раньше можно было добраться только через историю чата
+    sheetUrl: getSpreadsheet_().getUrl(),
     month: currentKey,
     monthTitle: monthTitle_(month),
     months: months.slice(0, 24),

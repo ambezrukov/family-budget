@@ -1621,6 +1621,8 @@ console.log('\n=== Мини-приложение ===');
 const payload = call('miniAppPayload_', '');
 check('доходы за месяц посчитаны', payload.incomeTotal > 0, String(payload.incomeTotal));
 check('расходы за месяц посчитаны', payload.total > 0, String(payload.total));
+check('в данных есть ссылка на таблицу', /docs\.google\.com/.test(String(payload.sheetUrl)),
+  String(payload.sheetUrl));
 check('остаток = доходы минус расходы',
   Math.abs(payload.balance - (payload.incomeTotal - payload.total)) < 0.01,
   payload.balance + ' vs ' + (payload.incomeTotal - payload.total));

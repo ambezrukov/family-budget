@@ -250,6 +250,19 @@
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 
   .empty { color: var(--ink-muted); font-size: 0.92rem; }
+
+  /* ---------- Подвал ---------- */
+  .foot {
+    margin: 0.2rem 0 0.4rem;
+    text-align: center;
+    font-size: 0.85rem;
+  }
+  .foot a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--accent-soft);
+    padding-bottom: 1px;
+  }
 </style>
 </head>
 <body>
@@ -401,6 +414,14 @@
       '</div>';
   }
 
+  // Ссылка на таблицу: править категории, курсы и справочники всё равно
+  // приходится там, а искать её в переписке с ботом неудобно.
+  function sheetLink(data) {
+    if (!data.sheetUrl) return '';
+    return '<div class="foot"><a href="' + escapeHtml(data.sheetUrl) +
+      '" data-sheet target="_blank" rel="noopener">Открыть таблицу бюджета</a></div>';
+  }
+
   function render(data) {
     state.data = data;
 
@@ -460,6 +481,7 @@
         incomeCard(data) +
         authors +
         '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
+        sheetLink(data) +
       '</div>';
   }
 
@@ -485,6 +507,15 @@
     if (chip) {
       state.month = chip.dataset.month;
       load(state.month);
+      return;
+    }
+
+    var sheet = event.target.closest('[data-sheet]');
+    if (sheet && tg && tg.openLink) {
+      // Внутри телеграма обычная ссылка открывается в том же окне поверх
+      // страницы — просим приложение открыть её снаружи
+      event.preventDefault();
+      tg.openLink(sheet.getAttribute('href'));
       return;
     }
 
