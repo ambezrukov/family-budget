@@ -9,6 +9,11 @@
 
 var GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
+// Последний запрос сорвался из-за перегрузки Google (503 «high demand» или
+// 429 «лимит»), а не потому что модель чего-то не поняла. Разница важна для
+// ответа человеку: в первом случае помогает просто повторить через минуту.
+var GEMINI_BUSY_ = false;
+
 /**
  * Низкоуровневый вызов модели.
  *
@@ -42,6 +47,19 @@ function geminiJson_(options) {
 
   var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
   var raw = geminiFetchWithRetry_(url, body, options.attempts);
+
+  // Перегружена бывает конкретная модель, а не весь Google. Вторая свободна
+  // чаще, чем занята, — пробуем её, прежде чем сдаваться.
+  if (!raw && GEMINI_BUSY_ && !options.noFallback) {
+    var spare = spareModel_(options.model);
+    if (spare) {
+      logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spare });
+      raw = geminiFetchWithRetry_(
+        GEMINI_ENDPOINT + encodeURIComponent(spare) + ':generateContent?key=' + encodeURIComponent(key),
+        body, 3);
+    }
+  }
+
   if (!raw) return null;
 
   var text = geminiExtractText_(raw);
@@ -66,11 +84,26 @@ function geminiJson_(options) {
 }
 
 /**
+ * Вторая модель на случай, когда первая занята. Медиа и текст в настройках
+ * разные, поэтому подменять достаточно одну другой.
+ */
+function spareModel_(model) {
+  var candidates = [modelForMedia_(), modelForText_(), GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT];
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i] && candidates[i] !== model) return candidates[i];
+  }
+  return '';
+}
+
+/**
  * Запрос с повторами: бесплатный уровень легко упирается в лимит (429),
- * а сервис иногда отдаёт 503. Три попытки с нарастающей паузой.
+ * а сервис иногда отдаёт 503 «сейчас много желающих». Паузы растянуты
+ * до полуминуты суммарно: 22.08.2026 чек не прочитался только потому, что
+ * трёх попыток за четыре секунды не хватило переждать всплеск спроса.
  */
 function geminiFetchWithRetry_(url, body, attempts) {
-  var delays = [0, 1200, 3000].slice(0, attempts || 3);
+  var delays = [0, 2000, 5000, 12000, 20000].slice(0, attempts || 5);
+  var busy = false;
   for (var attempt = 0; attempt < delays.length; attempt++) {
     if (delays[attempt]) Utilities.sleep(delays[attempt]);
     try {
@@ -83,9 +116,13 @@ function geminiFetchWithRetry_(url, body, attempts) {
       var code = response.getResponseCode();
       var text = response.getContentText();
 
-      if (code === 200) return JSON.parse(text);
+      if (code === 200) {
+        GEMINI_BUSY_ = false;
+        return JSON.parse(text);
+      }
 
       if (code === 429 || code >= 500) {
+        busy = true;
         logEvent_('Gemini временная ошибка', { code: code, attempt: attempt + 1, body: text.substring(0, 1000) });
         continue; // имеет смысл повторить
       }
@@ -99,11 +136,14 @@ function geminiFetchWithRetry_(url, body, attempts) {
       }
 
       logEvent_('Gemini отказал', { code: code, body: text.substring(0, 2000) });
+      GEMINI_BUSY_ = false;
       return null; // 400/403 повторять бессмысленно
     } catch (err) {
+      busy = true; // обрыв связи тоже лечится повтором
       logEvent_('Сбой запроса к Gemini', String(err));
     }
   }
+  GEMINI_BUSY_ = busy;
   return null;
 }
 
@@ -238,7 +278,8 @@ function probeModel_(model) {
       properties: { ok: { type: 'BOOLEAN' } },
       required: ['ok']
     },
-    attempts: 1 // на переборе повторы не нужны: не ответила — берём следующую
+    attempts: 1, // на переборе повторы не нужны: не ответила — берём следующую
+    noFallback: true // и подмена моделью-дублёром здесь только запутала бы подбор
   });
   return !!(answer && answer.ok === true);
 }

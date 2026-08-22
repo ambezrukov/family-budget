@@ -58,7 +58,7 @@ const defaultTextModel = (payload) => {
 
 M.setGeminiResponder((payload, url) => {
   const prompt = JSON.stringify(payload);
-  if (prompt.includes('кассовый чек')) return geminiPlan.receipt ? geminiPlan.receipt() : null;
+  if (prompt.includes('кассовый чек')) return geminiPlan.receipt ? geminiPlan.receipt(payload, url) : null;
   if (prompt.includes('текст страницы с чеком')) {
     return geminiPlan.pageReceipt ? geminiPlan.pageReceipt(payload) : null;
   }
@@ -311,7 +311,9 @@ gemini({ voice: () => null }); // имитируем сбой Gemini
 const beforeBroken = rowsCount();
 post({ message: msg({ voice: { file_id: 'voice3', duration: 5 } }) });
 check('при сбое модели запись не создана', rowsCount() === beforeBroken);
-check('бот сообщил о неудаче', /не разобрал/i.test(sent[sent.length - 1].text));
+// Мок отвечает 500 — для бота это «перегрузка», и говорит он об этом прямо:
+// человеку важно знать, что дело временное и стоит повторить.
+check('бот сообщил о неудаче', /перегружено|не разобрал/i.test(sent[sent.length - 1].text));
 check('сбой попал в лог', ss.getSheetByName('Лог').getLastRow() > 1);
 
 // --- 5. Чек ------------------------------------------------------------------
@@ -507,6 +509,25 @@ post({ message: msg({ document: { file_id: 'doc2', mime_type: 'application/pdf' 
 row = lastRow();
 check('PDF-чек обработан', row[2] === 1151.49, String(row[2]));
 check('способ ввода — файл', row[11] === 'файл', String(row[11]));
+
+// Перегрузка основной модели: Google отвечает 503 по конкретной модели, и
+// бот доводит дело до конца на запасной — так 22.08.2026 терялись чеки.
+const modelsAsked = [];
+gemini({ receipt: (payload, url) => {
+  modelsAsked.push(String(url));
+  return /flash-lite/.test(String(url))
+    ? { receipts: [{ total: 42, currency: 'ILS', datetime: '', store: 'Запасная',
+        category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: '' }] }
+    : null; // мок превращает null в 500 — то самое «сейчас много желающих»
+} });
+const beforeSpare = rowsCount();
+post({ message: msg({ document: { file_id: 'doc4', mime_type: 'application/pdf' } }) });
+check('чек дочитан запасной моделью', rowsCount() === beforeSpare + 1,
+  'добавлено: ' + (rowsCount() - beforeSpare));
+check('к запасной модели обращались', modelsAsked.some(u => /flash-lite/.test(u)));
+check('основную пробовали несколько раз',
+  modelsAsked.filter(u => !/flash-lite/.test(u)).length >= 3,
+  'попыток: ' + modelsAsked.filter(u => !/flash-lite/.test(u)).length);
 
 const beforeZip = rowsCount();
 post({ message: msg({ document: { file_id: 'doc3', mime_type: 'application/zip' } }) });

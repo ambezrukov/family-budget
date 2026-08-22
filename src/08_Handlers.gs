@@ -856,8 +856,11 @@ function handleVoice_(message) {
 
   var parsed = geminiParseVoice_(file.base64, file.mimeType);
   if (!parsed) {
-    logEvent_('Голос не разобран', { fileId: media.file_id, duration: media.duration });
-    tgSend_(chatId, 'Не разобрал голосовое. Напишите, пожалуйста, текстом: сумма и описание.');
+    logEvent_('Голос не разобран', { fileId: media.file_id, duration: media.duration, перегрузка: GEMINI_BUSY_ });
+    tgSend_(chatId, GEMINI_BUSY_
+      ? 'Распознавание сейчас перегружено на стороне Google — это временно. ' +
+        'Повторите голосовое через пару минут или напишите текстом.'
+      : 'Не разобрал голосовое. Напишите, пожалуйста, текстом: сумма и описание.');
     return;
   }
 
@@ -897,8 +900,12 @@ function handleReceipt_(message, fileId, sourceType) {
 
   var answer = geminiParseReceipt_(file.base64, file.mimeType, caption);
   if (!answer) {
-    logEvent_('Чек не разобран', { fileId: fileId });
-    tgSend_(chatId, 'Не смог прочитать чек. Напишите сумму текстом — запишу.');
+    logEvent_('Чек не разобран', { fileId: fileId, перегрузка: GEMINI_BUSY_ });
+    tgSend_(chatId, GEMINI_BUSY_
+      ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
+        'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
+        'или напишите сумму текстом.'
+      : 'Не смог прочитать чек. Напишите сумму текстом — запишу.');
     return;
   }
 
