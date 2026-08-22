@@ -16,7 +16,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.9.0';
+var BOT_VERSION = '1.9.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -46,6 +46,11 @@ var PROP_BOT_TOKEN = 'TELEGRAM_TOKEN';
 var PROP_GEMINI_KEY = 'GEMINI_API_KEY';
 var PROP_SPREADSHEET_ID = 'SPREADSHEET_ID';
 var PROP_WEBHOOK_SECRET = 'WEBHOOK_SECRET'; // необязательный
+// Модели, у которых сегодня кончилась дневная квота: {имя: 'ДД.ММ.ГГГГ'}
+var PROP_EXHAUSTED_MODELS = 'GEMINI_EXHAUSTED';
+// Модель, которую бот считает лучшей: на неё он вернётся, когда у той
+// обновится суточный лимит
+var PROP_PREFERRED_MEDIA_MODEL = 'GEMINI_PREFERRED_MEDIA';
 
 // ---------------------------------------------------------------------------
 // Модели Gemini (бесплатный уровень). При желании переопределяются в «Настройках».

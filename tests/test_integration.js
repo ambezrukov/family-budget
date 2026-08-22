@@ -563,6 +563,30 @@ check('исчерпанную модель не долбили повторам�
   quotaCalls.filter(u => !/flash-lite/.test(u)).length === 1,
   'попыток: ' + quotaCalls.filter(u => !/flash-lite/.test(u)).length);
 
+// Исчерпанную модель бот запоминает до конца суток и в следующий раз даже
+// не пробует: иначе каждый чек начинался бы с ожидания впустую
+check('исчерпанная модель запомнена',
+  /gemini/.test(String(M.scriptProps.GEMINI_EXHAUSTED || '')),
+  String(M.scriptProps.GEMINI_EXHAUSTED));
+check('рабочая модель закреплена в настройках',
+  /flash-lite/.test(String(call('modelForMedia_'))), String(call('modelForMedia_')));
+
+const secondQuotaCalls = quotaCalls.length;
+post({ message: msg({ document: { file_id: 'doc7', mime_type: 'application/pdf' } }) });
+check('второй чек сразу пошёл к рабочей модели',
+  quotaCalls.slice(secondQuotaCalls).every(u => /flash-lite/.test(u)),
+  JSON.stringify(quotaCalls.slice(secondQuotaCalls)));
+
+// Наутро квота обновляется — бот возвращается на лучшую модель сам
+M.scriptProps.GEMINI_EXHAUSTED = '{}'; // как будто наступил новый день
+gemini({ receipt: () => ({ receipts: [{
+  total: 12, currency: 'ILS', datetime: '', store: 'Новый день',
+  category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: ''
+}] }) });
+post({ message: msg({ document: { file_id: 'doc8', mime_type: 'application/pdf' } }) });
+check('после обновления квоты вернулись на прежнюю модель',
+  String(call('modelForMedia_')) === 'gemini-2.5-flash', String(call('modelForMedia_')));
+
 const beforeZip = rowsCount();
 post({ message: msg({ document: { file_id: 'doc3', mime_type: 'application/zip' } }) });
 check('неподходящий файл не записан', rowsCount() === beforeZip);

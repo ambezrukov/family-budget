@@ -53,6 +53,8 @@ function geminiJson_(options) {
     body.systemInstruction = { parts: [{ text: options.systemInstruction }] };
   }
 
+  restorePreferredModel_();
+
   var started = new Date().getTime();
   var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
   var raw = geminiFetchWithRetry_(url, body, options.attempts, started);
@@ -68,9 +70,24 @@ function geminiJson_(options) {
         break;
       }
       logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spares[i] });
+      var quotaWasOut = GEMINI_QUOTA_OUT_;
       raw = geminiFetchWithRetry_(
         GEMINI_ENDPOINT + encodeURIComponent(spares[i]) + ':generateContent?key=' + encodeURIComponent(key),
         body, 2, started);
+
+      // Если прежняя модель выбыла до конца суток, а эта ответила — закрепляем
+      // её в настройках. Иначе каждый следующий чек снова начинал бы с той,
+      // что уже исчерпана, и ждал бы впустую
+      if (raw && quotaWasOut && options.model === modelForMedia_()) {
+        // Запоминаем, кого пришлось потеснить: как только у неё обновится
+        // суточный лимит, бот вернётся обратно сам
+        if (!scriptProp_(PROP_PREFERRED_MEDIA_MODEL)) {
+          PropertiesService.getScriptProperties()
+            .setProperty(PROP_PREFERRED_MEDIA_MODEL, options.model);
+        }
+        updateSetting_('Модель для медиа', spares[i]);
+        logEvent_('Рабочая модель закреплена в настройках', { было: options.model, стало: spares[i] });
+      }
     }
   }
 
@@ -98,6 +115,24 @@ function geminiJson_(options) {
 }
 
 /**
+ * Возвращает лучшую модель, если её суточный лимит уже обновился.
+ *
+ * Без этого бот, разово спустившийся на модель попроще, так на ней и остался
+ * бы навсегда — хотя причина была временной и прошла в полночь.
+ */
+function restorePreferredModel_() {
+  var preferred = scriptProp_(PROP_PREFERRED_MEDIA_MODEL);
+  if (!preferred) return;
+  if (exhaustedModels_()[preferred]) return; // сегодня она снова кончилась
+
+  PropertiesService.getScriptProperties().deleteProperty(PROP_PREFERRED_MEDIA_MODEL);
+  if (modelForMedia_() === preferred) return;
+
+  updateSetting_('Модель для медиа', preferred);
+  logEvent_('Вернулись на основную модель', { модель: preferred });
+}
+
+/**
  * Очередь моделей на случай, когда основная занята.
  *
  * Сначала вторая настроенная (она под рукой и точно рабочая), затем — модели
@@ -105,22 +140,47 @@ function geminiJson_(options) {
  * в очереди целиком, а спрос на 2.x давно спал.
  */
 function spareModels_(model) {
-  var queue = [modelForMedia_(), modelForText_(), GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT];
+  // Порядок — от новых к старым: свежая модель разбирает чек лучше, и лишь
+  // когда она недоступна, есть смысл спускаться к прошлым поколениям
+  var queue = [modelForMedia_(), modelForText_()]
+    .concat(rankModels_(availableGeminiModels_(), 'media'))
+    .concat([GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT]);
 
-  var ranked = rankModels_(availableGeminiModels_(), 'media');
-  var older = ranked.filter(function (name) {
-    return queue.indexOf(name) === -1 && name !== model;
-  });
-  // Список отсортирован от новых к старым, а нужен обратный порядок:
-  // старое поколение реже перегружено, чем то, куда все только перешли
-  queue = queue.concat(older.reverse());
-
+  var spent = exhaustedModels_();
   var seen = {};
+
   return queue.filter(function (name) {
     if (!name || name === model || seen[name]) return false;
     seen[name] = true;
-    return true;
-  }).slice(0, 4);
+    // Модель, у которой сегодня кончилась квота, до полуночи бесполезна
+    return !spent[name];
+  }).slice(0, 5);
+}
+
+/**
+ * Модели, исчерпавшие дневную квоту. Помним по дате: счётчик у Google
+ * обнуляется в полночь, и назавтра модель снова годится.
+ */
+function exhaustedModels_() {
+  try {
+    var saved = JSON.parse(scriptProp_(PROP_EXHAUSTED_MODELS) || '{}');
+    var today = formatDate_(new Date());
+    var live = {};
+    Object.keys(saved).forEach(function (name) {
+      if (saved[name] === today) live[name] = today;
+    });
+    return live;
+  } catch (err) {
+    return {};
+  }
+}
+
+function rememberExhaustedModel_(model) {
+  if (!model) return;
+  var spent = exhaustedModels_();
+  spent[model] = formatDate_(new Date());
+  PropertiesService.getScriptProperties()
+    .setProperty(PROP_EXHAUSTED_MODELS, JSON.stringify(spent));
 }
 
 /**
@@ -166,7 +226,9 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
         // повторы только тратят время: сразу уходим к другой модели, у неё
         // счётчик свой
         if (code === 429 && /quota|per day|daily/i.test(text)) {
-          logEvent_('Дневная квота модели исчерпана', { модель: url.split('/models/')[1] });
+          var spentModel = decodeURIComponent(String(url.split('/models/')[1] || '').split(':')[0]);
+          logEvent_('Дневная квота модели исчерпана', { модель: spentModel });
+          rememberExhaustedModel_(spentModel);
           GEMINI_QUOTA_OUT_ = true;
           break;
         }

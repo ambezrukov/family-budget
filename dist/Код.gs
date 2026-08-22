@@ -50,7 +50,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.9.0';
+var BOT_VERSION = '1.9.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -80,6 +80,11 @@ var PROP_BOT_TOKEN = 'TELEGRAM_TOKEN';
 var PROP_GEMINI_KEY = 'GEMINI_API_KEY';
 var PROP_SPREADSHEET_ID = 'SPREADSHEET_ID';
 var PROP_WEBHOOK_SECRET = 'WEBHOOK_SECRET'; // необязательный
+// Модели, у которых сегодня кончилась дневная квота: {имя: 'ДД.ММ.ГГГГ'}
+var PROP_EXHAUSTED_MODELS = 'GEMINI_EXHAUSTED';
+// Модель, которую бот считает лучшей: на неё он вернётся, когда у той
+// обновится суточный лимит
+var PROP_PREFERRED_MEDIA_MODEL = 'GEMINI_PREFERRED_MEDIA';
 
 // ---------------------------------------------------------------------------
 // Модели Gemini (бесплатный уровень). При желании переопределяются в «Настройках».
@@ -1355,6 +1360,8 @@ function geminiJson_(options) {
     body.systemInstruction = { parts: [{ text: options.systemInstruction }] };
   }
 
+  restorePreferredModel_();
+
   var started = new Date().getTime();
   var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
   var raw = geminiFetchWithRetry_(url, body, options.attempts, started);
@@ -1370,9 +1377,24 @@ function geminiJson_(options) {
         break;
       }
       logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spares[i] });
+      var quotaWasOut = GEMINI_QUOTA_OUT_;
       raw = geminiFetchWithRetry_(
         GEMINI_ENDPOINT + encodeURIComponent(spares[i]) + ':generateContent?key=' + encodeURIComponent(key),
         body, 2, started);
+
+      // Если прежняя модель выбыла до конца суток, а эта ответила — закрепляем
+      // её в настройках. Иначе каждый следующий чек снова начинал бы с той,
+      // что уже исчерпана, и ждал бы впустую
+      if (raw && quotaWasOut && options.model === modelForMedia_()) {
+        // Запоминаем, кого пришлось потеснить: как только у неё обновится
+        // суточный лимит, бот вернётся обратно сам
+        if (!scriptProp_(PROP_PREFERRED_MEDIA_MODEL)) {
+          PropertiesService.getScriptProperties()
+            .setProperty(PROP_PREFERRED_MEDIA_MODEL, options.model);
+        }
+        updateSetting_('Модель для медиа', spares[i]);
+        logEvent_('Рабочая модель закреплена в настройках', { было: options.model, стало: spares[i] });
+      }
     }
   }
 
@@ -1400,6 +1422,24 @@ function geminiJson_(options) {
 }
 
 /**
+ * Возвращает лучшую модель, если её суточный лимит уже обновился.
+ *
+ * Без этого бот, разово спустившийся на модель попроще, так на ней и остался
+ * бы навсегда — хотя причина была временной и прошла в полночь.
+ */
+function restorePreferredModel_() {
+  var preferred = scriptProp_(PROP_PREFERRED_MEDIA_MODEL);
+  if (!preferred) return;
+  if (exhaustedModels_()[preferred]) return; // сегодня она снова кончилась
+
+  PropertiesService.getScriptProperties().deleteProperty(PROP_PREFERRED_MEDIA_MODEL);
+  if (modelForMedia_() === preferred) return;
+
+  updateSetting_('Модель для медиа', preferred);
+  logEvent_('Вернулись на основную модель', { модель: preferred });
+}
+
+/**
  * Очередь моделей на случай, когда основная занята.
  *
  * Сначала вторая настроенная (она под рукой и точно рабочая), затем — модели
@@ -1407,22 +1447,47 @@ function geminiJson_(options) {
  * в очереди целиком, а спрос на 2.x давно спал.
  */
 function spareModels_(model) {
-  var queue = [modelForMedia_(), modelForText_(), GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT];
+  // Порядок — от новых к старым: свежая модель разбирает чек лучше, и лишь
+  // когда она недоступна, есть смысл спускаться к прошлым поколениям
+  var queue = [modelForMedia_(), modelForText_()]
+    .concat(rankModels_(availableGeminiModels_(), 'media'))
+    .concat([GEMINI_MODEL_MULTIMODAL, GEMINI_MODEL_TEXT]);
 
-  var ranked = rankModels_(availableGeminiModels_(), 'media');
-  var older = ranked.filter(function (name) {
-    return queue.indexOf(name) === -1 && name !== model;
-  });
-  // Список отсортирован от новых к старым, а нужен обратный порядок:
-  // старое поколение реже перегружено, чем то, куда все только перешли
-  queue = queue.concat(older.reverse());
-
+  var spent = exhaustedModels_();
   var seen = {};
+
   return queue.filter(function (name) {
     if (!name || name === model || seen[name]) return false;
     seen[name] = true;
-    return true;
-  }).slice(0, 4);
+    // Модель, у которой сегодня кончилась квота, до полуночи бесполезна
+    return !spent[name];
+  }).slice(0, 5);
+}
+
+/**
+ * Модели, исчерпавшие дневную квоту. Помним по дате: счётчик у Google
+ * обнуляется в полночь, и назавтра модель снова годится.
+ */
+function exhaustedModels_() {
+  try {
+    var saved = JSON.parse(scriptProp_(PROP_EXHAUSTED_MODELS) || '{}');
+    var today = formatDate_(new Date());
+    var live = {};
+    Object.keys(saved).forEach(function (name) {
+      if (saved[name] === today) live[name] = today;
+    });
+    return live;
+  } catch (err) {
+    return {};
+  }
+}
+
+function rememberExhaustedModel_(model) {
+  if (!model) return;
+  var spent = exhaustedModels_();
+  spent[model] = formatDate_(new Date());
+  PropertiesService.getScriptProperties()
+    .setProperty(PROP_EXHAUSTED_MODELS, JSON.stringify(spent));
 }
 
 /**
@@ -1468,7 +1533,9 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
         // повторы только тратят время: сразу уходим к другой модели, у неё
         // счётчик свой
         if (code === 429 && /quota|per day|daily/i.test(text)) {
-          logEvent_('Дневная квота модели исчерпана', { модель: url.split('/models/')[1] });
+          var spentModel = decodeURIComponent(String(url.split('/models/')[1] || '').split(':')[0]);
+          logEvent_('Дневная квота модели исчерпана', { модель: spentModel });
+          rememberExhaustedModel_(spentModel);
           GEMINI_QUOTA_OUT_ = true;
           break;
         }
@@ -3913,9 +3980,9 @@ function handleReceipt_(message, fileId, sourceType) {
   if (!answer) {
     logEvent_('Чек не разобран', { fileId: fileId, перегрузка: GEMINI_BUSY_ });
     tgSend_(chatId, GEMINI_QUOTA_OUT_
-      ? 'На сегодня бесплатный лимит распознавания у Google исчерпан — ' +
-        'счётчик обнулится ночью. Можно сменить модель: <code>/model авто</code> ' +
-        'подберёт ту, у которой лимит ещё свой. Или напишите сумму текстом.'
+      ? 'На сегодня бесплатный лимит у Google исчерпан — и у основной модели, ' +
+        'и у запасных, которые я перебрал. Счётчики обнулятся ночью, ' +
+        'а пока напишите сумму текстом — запишу.'
       : (GEMINI_BUSY_
         ? 'Распознавание сейчас перегружено на стороне Google — это временно ' +
           'и от чека не зависит. Пришлите файл ещё раз через пару минут ' +
@@ -7400,9 +7467,10 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Модель можно сменить из чата: /model покажет, кто сейчас распознаёт чеки, «/model медиа gemini-2.5-flash» переключит, «/model авто» подберёт рабочую пару, «/model список» покажет всё, что доступно ключу",
-  "Кончившуюся дневную квоту бот больше не пережидает повторами: у каждой модели свой счётчик, поэтому он сразу переходит к следующей",
-  "И говорит об этом прямо: «лимит на сегодня исчерпан, обнулится ночью» — вместо расплывчатого «перегружено, попробуйте позже»"
+  "Смена модели стала полностью автоматической. Когда у модели кончается дневной запас, бот запоминает это до полуночи и больше её не трогает, а работает на следующей — перебирая от новых к старым",
+  "Сработавшую модель он закрепляет в настройках, чтобы следующий чек не начинался с ожидания впустую",
+  "Наутро, когда лимит обновляется, бот сам возвращается на прежнюю модель",
+  "Команда /model осталась, но теперь она для любопытства и ручных случаев, а не для того, чтобы чинить бота руками"
 ];
 
 
@@ -8436,13 +8504,15 @@ function handleModelCommand_(message, text) {
       '• чеки и голос — <b>' + escapeHtml_(modelForMedia_()) + '</b>',
       '• разбор текста — <b>' + escapeHtml_(modelForText_()) + '</b>',
       '',
-      'Лимиты Google считает по каждой модели отдельно, так что при',
-      '«превышена квота» помогает переход на соседнюю:',
-      '<code>/model медиа gemini-2.5-flash</code>',
-      '<code>/model текст gemini-2.5-flash-lite</code>',
+      'Вмешиваться обычно не нужно: лимиты Google считает по каждой модели',
+      'отдельно, и когда у одной кончается дневной запас, бот сам переходит',
+      'к следующей — от новых к старым. Наутро, когда лимит обновится,',
+      'он так же сам возвращается обратно.',
       '',
+      'Если всё-таки хочется вручную:',
+      '<code>/model медиа gemini-2.5-flash</code> — задать модель для чеков',
       '<code>/model список</code> — что доступно вашему ключу',
-      '<code>/model авто</code> — подобрать рабочие самостоятельно'
+      '<code>/model авто</code> — перебрать и выбрать рабочую пару'
     ].join('\n'));
     return;
   }
