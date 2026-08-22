@@ -173,7 +173,7 @@ function handleCommand_(message, text) {
       return;
     case '/kategorii':
     case '/categories':
-      handleCategorizeCommand_(message);
+      handleCategorizeCommand_(message, text);
       return;
     case '/postupleniya':
     case '/prihod':

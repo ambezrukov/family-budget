@@ -54,7 +54,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.16.1';
+var BOT_VERSION = '1.17.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -2912,6 +2912,7 @@ function helpText_() {
     '/import — разобрать выписки из папки «Выписки» на Диске',
     '/postupleniya — разобрать приходы на счёт: доход или перевод',
     '/kategorii — разложить незнакомые магазины из выписок по категориям',
+    '   «/kategorii заново» — пересчитать всё по исправленному справочнику',
     '/uchet — с какой даты брать строки выписок («/uchet 15.08.2026»)',
     '/model — какая модель распознаёт чеки и как её сменить',
     '/spravka — эта справка',
@@ -3389,7 +3390,7 @@ function handleCommand_(message, text) {
       return;
     case '/kategorii':
     case '/categories':
-      handleCategorizeCommand_(message);
+      handleCategorizeCommand_(message, text);
       return;
     case '/postupleniya':
     case '/prihod':
@@ -5423,9 +5424,16 @@ function starterCategories_() {
     ['Развлечения', 'Спорт и фитнес', 'спортзал, тренажёр, фитнес, холмс плейс, йога, бассейн'],
     ['Развлечения', 'Поездки и отдых', 'отель, гостиниц, цимер, экскурс, поездк, отпуск, авиабилет'],
     ['Развлечения', 'Хобби', 'книг, хобби, настольная игр, рукодели'],
+    // Покупки в играх и приложениях: приходят через Google Play и App Store,
+    // в выписке видны как «Google» плюс название игры
+    ['Развлечения', 'Игры и приложения', 'google play, app store, steam, playstation, nintendo, roblox, minecraft, внутриигров'],
 
     ['Подарки', 'Подарки', 'подарок, подарк, букет, цветы, матана'],
     ['Подарки', 'Благотворительность', 'пожертвован, цдака, благотворительн'],
+
+    ['Образование', 'Курсы и языки', 'ульпан, курс иврита, курсы, обучени, вебинар, лекци, семинар'],
+    ['Образование', 'Репетиторы', 'репетитор, частный урок, занятия с преподавател'],
+    ['Образование', 'Книги и учебники', 'учебник, пособие, книга по'],
 
     ['Уход за собой', 'Парикмахер', 'волос, стрижк, парикмахер, барбершоп, окраск, мелирован'],
     ['Уход за собой', 'Депиляция и эпиляция', 'депиляц, эпиляц, шугаринг, воск'],
@@ -7830,9 +7838,9 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "22.08.2026";
 
 var BOT_CHANGES = [
-  "Меню команд телеграма обновляется само при выходе новой версии. Раньше новая команда работала, но в подсказке не появлялась, пока список не пропишут вручную из редактора",
-  "В меню добавлены /nedelya, /import, /postupleniya, /kategorii, /uchet, /model и /miniapp",
-  "Круговая диаграмма картинкой убрана: полосок в тексте достаточно, а лишний файл в переписке только мешает"
+  "Появилась категория «Образование» — курсы и языки, репетиторы, учебники. Курс иврита у частного преподавателя модель относила к уходу за собой: в названии стояло «יופי», то есть «красота»",
+  "И подкатегория «Развлечения · Игры и приложения»: покупки в играх идут через Google Play и в выписке выглядят как «Google» с названием игры",
+  "«/kategorii заново» пересчитывает уже разложенные строки по текущему справочнику. Без этого правка ключевых слов работала бы только для новых выписок, а старые строки оставались бы в прежних категориях"
 ];
 
 
@@ -10078,8 +10086,18 @@ function categorizeOperations_(limit) {
 /**
  * Команда /kategorii: разложить незнакомые магазины по категориям.
  */
-function handleCategorizeCommand_(message) {
+function handleCategorizeCommand_(message, text) {
   var chatId = message.chat.id;
+
+  // «/kategorii заново» — пересчитать уже разложенное по текущему словарю
+  if (/\s(заново|пересчитать)\s*$/i.test(String(text || ''))) {
+    var changed = recategorizeOperations_();
+    tgSend_(chatId, changed
+      ? 'Пересчитал по справочнику: строк изменилось — <b>' + changed + '</b>.'
+      : 'Пересчитал — всё и так соответствует справочнику.');
+    return;
+  }
+
   var pending = unknownStores_();
 
   if (!pending.length) {
@@ -10107,6 +10125,43 @@ function handleCategorizeCommand_(message) {
   if (result.left) lines.push('Осталось на следующий заход: ' + result.left);
 
   tgSend_(chatId, lines.join('\n'));
+}
+
+/**
+ * Перекладывает строки выписок по категориям заново — по текущему словарю.
+ *
+ * Нужно, когда справочник поправили: модель разложила «יופיי סבטלנה זינגר»
+ * в «Уход за собой», потому что «יופי» значит «красота», а на деле это курс
+ * иврита. Дописали ключевое слово — и старые строки должны переехать следом,
+ * иначе правка справочника имеет смысл только для будущих выписок.
+ */
+function recategorizeOperations_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var changed = 0;
+
+  rows.forEach(function (row, position) {
+    if (String(row[14]).trim()) return; // «не трата» без категории и живёт
+
+    var store = String(row[10] || '').trim();
+    if (!store) return;
+
+    var guess = categorizeByDictionary_(store.toLowerCase());
+    if (!guess) return;
+
+    var category = String(row[11] || '');
+    var subcategory = String(row[12] || '');
+    if (category === guess.category && subcategory === (guess.subcategory || '')) return;
+
+    sheet.getRange(position + 2, 12, 1, 2).setValues([[guess.category, guess.subcategory || '']]);
+    changed++;
+  });
+
+  if (changed) logEvent_('Категории пересчитаны по словарю', { строк: changed });
+  return changed;
 }
 
 

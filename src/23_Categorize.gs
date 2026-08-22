@@ -192,8 +192,18 @@ function categorizeOperations_(limit) {
 /**
  * Команда /kategorii: разложить незнакомые магазины по категориям.
  */
-function handleCategorizeCommand_(message) {
+function handleCategorizeCommand_(message, text) {
   var chatId = message.chat.id;
+
+  // «/kategorii заново» — пересчитать уже разложенное по текущему словарю
+  if (/\s(заново|пересчитать)\s*$/i.test(String(text || ''))) {
+    var changed = recategorizeOperations_();
+    tgSend_(chatId, changed
+      ? 'Пересчитал по справочнику: строк изменилось — <b>' + changed + '</b>.'
+      : 'Пересчитал — всё и так соответствует справочнику.');
+    return;
+  }
+
   var pending = unknownStores_();
 
   if (!pending.length) {
@@ -221,4 +231,41 @@ function handleCategorizeCommand_(message) {
   if (result.left) lines.push('Осталось на следующий заход: ' + result.left);
 
   tgSend_(chatId, lines.join('\n'));
+}
+
+/**
+ * Перекладывает строки выписок по категориям заново — по текущему словарю.
+ *
+ * Нужно, когда справочник поправили: модель разложила «יופיי סבטלנה זינגר»
+ * в «Уход за собой», потому что «יופי» значит «красота», а на деле это курс
+ * иврита. Дописали ключевое слово — и старые строки должны переехать следом,
+ * иначе правка справочника имеет смысл только для будущих выписок.
+ */
+function recategorizeOperations_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return 0;
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var changed = 0;
+
+  rows.forEach(function (row, position) {
+    if (String(row[14]).trim()) return; // «не трата» без категории и живёт
+
+    var store = String(row[10] || '').trim();
+    if (!store) return;
+
+    var guess = categorizeByDictionary_(store.toLowerCase());
+    if (!guess) return;
+
+    var category = String(row[11] || '');
+    var subcategory = String(row[12] || '');
+    if (category === guess.category && subcategory === (guess.subcategory || '')) return;
+
+    sheet.getRange(position + 2, 12, 1, 2).setValues([[guess.category, guess.subcategory || '']]);
+    changed++;
+  });
+
+  if (changed) logEvent_('Категории пересчитаны по словарю', { строк: changed });
+  return changed;
 }
