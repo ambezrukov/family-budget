@@ -108,6 +108,64 @@ function draftForStorage_(draft) {
 }
 
 // ---------------------------------------------------------------------------
+// Затянувшаяся работа и обрыв на полуслове
+// ---------------------------------------------------------------------------
+
+// Google обрывает скрипт на шестой минуте без предупреждения: ни ответа
+// человеку, ни строчки в журнале. Чтобы такое не выглядело как «бот молчит»,
+// перед долгой работой оставляем отметку, а после — снимаем. Уцелевшая
+// отметка означает, что прошлый запуск не дожил до ответа.
+var LONG_WORK_KEY_ = 'LONG_WORK';
+
+// Порог заведомо больше шести минут: пока отметка моложе, работа может идти
+// прямо сейчас — параллельным запуском, и мешать ему незачем.
+var LONG_WORK_STALE_MS = 420000;
+
+function markLongWork_(chatId, what) {
+  PropertiesService.getScriptProperties().setProperty(LONG_WORK_KEY_, JSON.stringify({
+    chatId: chatId,
+    what: what || 'работа',
+    ts: new Date().getTime()
+  }));
+}
+
+function clearLongWork_() {
+  PropertiesService.getScriptProperties().deleteProperty(LONG_WORK_KEY_);
+}
+
+/**
+ * Рассказывает о работе, которая оборвалась. Возвращает true, если было
+ * о чём рассказать.
+ */
+function reportInterruptedWork_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(LONG_WORK_KEY_);
+  if (!raw) return false;
+
+  var mark;
+  try {
+    mark = JSON.parse(raw);
+  } catch (err) {
+    clearLongWork_();
+    return false;
+  }
+
+  var age = new Date().getTime() - Number(mark.ts || 0);
+  if (age < LONG_WORK_STALE_MS) return false; // возможно, идёт прямо сейчас
+
+  clearLongWork_();
+  logEvent_('Прошлая работа оборвалась', {
+    что: mark.what,
+    возраст: Math.round(age / 60000) + ' мин'
+  });
+
+  if (!mark.chatId) return false;
+  tgSend_(mark.chatId, 'Прошлый чек я дочитать не успел: Google не ответил вовремя, ' +
+    'и Apps Script оборвал разбор. Пришлите его ещё раз — или напишите сумму текстом, ' +
+    'запишу без распознавания.');
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Короткое хранение данных для инлайн-кнопок
 // ---------------------------------------------------------------------------
 

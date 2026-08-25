@@ -14,6 +14,14 @@ function handleUpdate_(update) {
     return; // телеграм прислал тот же апдейт повторно
   }
 
+  // Прошлый разбор мог оборваться на полуслове: Google убивает скрипт на
+  // шестой минуте молча. Тогда человек остался без ответа — объясняем сейчас
+  try {
+    reportInterruptedWork_();
+  } catch (err) {
+    logEvent_('Сбой доклада о прерванной работе', String(err));
+  }
+
   // Код мог смениться с прошлого раза: обновление ставит один человек,
   // а знать о новом должны все
   try {
@@ -925,9 +933,10 @@ function handleReceipt_(message, fileId, sourceType) {
   if (/^[\w.\-]+\.(pdf|jpe?g|png|heic|webp)$/i.test(caption)) caption = '';
 
   tgSendChatAction_(chatId, 'typing');
-  // Чек из файла разбирается дольше снимка: страниц больше, позиций тоже.
-  // Молчание в это время читается как «бот не получил»
-  if (kind === 'файл') tgSend_(chatId, 'Взял чек, читаю…');
+  // Молчание в это время читается как «бот не получил». Раньше бот отзывался
+  // только на файл, а снимок разбирал молча — и 25.08.2026, когда Google
+  // отвечал по пять минут, это выглядело как сломанный бот
+  tgSend_(chatId, 'Взял чек, читаю…');
 
   var file = tgDownloadFile_(fileId);
   if (!file) {
@@ -936,7 +945,25 @@ function handleReceipt_(message, fileId, sourceType) {
     return;
   }
 
-  var answer = geminiParseReceipt_(file.base64, file.mimeType, caption);
+  // Если модель отвечает долго — сказать об этом вслух, один раз
+  setSlowNotice_(function () {
+    tgSend_(chatId, 'Google отвечает медленно — распознавание затянулось. ' +
+      'Я не бросил, продолжаю ждать.');
+  });
+  // Отметка на случай, если Google оборвёт скрипт посреди разбора: тогда
+  // о неудаче расскажет следующий запуск, а не тишина в чате
+  markLongWork_(chatId, 'чек');
+
+  var answer;
+  try {
+    answer = geminiParseReceipt_(file.base64, file.mimeType, caption);
+  } finally {
+    // Снимаем в любом случае: уцелевшая отметка заставит бота извиняться
+    // за работу, которая на самом деле закончилась
+    setSlowNotice_(null);
+    clearLongWork_();
+  }
+
   if (!answer) {
     logEvent_('Чек не разобран', { fileId: fileId, перегрузка: GEMINI_BUSY_ });
     tgSend_(chatId, GEMINI_QUOTA_OUT_

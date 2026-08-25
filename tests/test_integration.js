@@ -1896,6 +1896,42 @@ check('в свежей установке молчит, только запом�
   M.scriptProps.RUNNING_VERSION + ', сообщений: ' + (sent.length - beforeFresh));
 
 
+console.log('\n=== Бот не молчит над чеком ===');
+gemini({ receipt: () => ({ receipts: [{
+  total: 55, currency: 'ILS', datetime: '', store: 'Тест',
+  category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: ''
+}] }) });
+const beforeSilence = sent.length;
+post({ message: msg({ photo: [{ file_id: 'quick' }] }) });
+check('на снимок бот сразу отзывается',
+  /Взял чек, читаю/.test(sent[beforeSilence].text), sent[beforeSilence].text.slice(0, 60));
+check('отметка о долгой работе снята после разбора',
+  !M.scriptProps.LONG_WORK, String(M.scriptProps.LONG_WORK));
+
+console.log('\n=== Предупреждение о затяжке ===');
+let slowSaid = 0;
+call('setSlowNotice_', () => { slowSaid++; });
+check('пока ждём недолго — молчим', call('noticeIfSlow_', Date.now() - 5000) === false);
+check('после порога предупреждаем', call('noticeIfSlow_', Date.now() - 60000) === true);
+check('второй раз не повторяем', call('noticeIfSlow_', Date.now() - 60000) === false);
+check('предупреждение ушло ровно одно', slowSaid === 1, 'раз: ' + slowSaid);
+call('setSlowNotice_', null);
+check('снятое предупреждение больше не срабатывает',
+  call('noticeIfSlow_', Date.now() - 60000) === false);
+
+console.log('\n=== Обрыв разбора на полуслове ===');
+const beforeInterrupted = sent.length;
+call('markLongWork_', 555, 'чек');
+check('свежая отметка молчит: работа может идти прямо сейчас',
+  call('reportInterruptedWork_') === false && sent.length === beforeInterrupted);
+// Состариваем отметку: так она выглядит после убитого по времени запуска
+M.scriptProps.LONG_WORK = JSON.stringify({ chatId: 555, what: 'чек', ts: Date.now() - 8 * 60000 });
+check('о прерванной работе бот докладывает', call('reportInterruptedWork_') === true);
+check('и объясняет человеческими словами',
+  /не успел/i.test(sent[sent.length - 1].text), sent[sent.length - 1].text.slice(0, 80));
+check('отметка снята, второй раз не извиняется',
+  call('reportInterruptedWork_') === false && !M.scriptProps.LONG_WORK);
+
 console.log('\n=== Самопроверка ===');
 const selfCheckText = call('selfCheck');
 check('самопроверка отработала', selfCheckText.includes('Проверка настройки'));

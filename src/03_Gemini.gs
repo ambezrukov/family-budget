@@ -20,16 +20,59 @@ var GEMINI_QUOTA_OUT_ = false;
 // Сколько всего времени отводим на один разбор со всеми повторами и сменой
 // моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
 // запись расхода с ответом — поэтому берём меньше половины.
-var GEMINI_TIME_BUDGET_MS = 120000;
+var GEMINI_TIME_BUDGET_MS = 90000;
 
 // Когда начали обрабатывать входящее сообщение. Google убивает скрипт через
 // шесть минут без предупреждения — а на длинном чеке бот успевает и перебрать
 // модели, и дозапросить позиции. Общий счётчик не даёт подойти к обрыву.
+//
+// Половина отпущенных шести минут оставлена нарочно: 25.08.2026 перегруженная
+// модель держала одно соединение почти пять минут, скрипт убили на 360-й
+// секунде, и человек не получил ничего — ни записи, ни объяснения. Чем раньше
+// бот сдаётся, тем вернее успевает сказать об этом вслух.
 var RUN_STARTED_ = new Date().getTime();
-var RUN_LIMIT_MS = 240000;
+var RUN_LIMIT_MS = 180000;
 
 function runElapsedMs_() {
   return new Date().getTime() - RUN_STARTED_;
+}
+
+// ---------------------------------------------------------------------------
+// Предупреждение о затянувшемся ожидании
+// ---------------------------------------------------------------------------
+
+// Столько бот ждёт молча. Дальше человеку в чате пора сказать, что дело
+// не в нём и не в чеке: молчание читается как «бот сломался».
+var GEMINI_SLOW_NOTICE_MS = 30000;
+
+var GEMINI_SLOW_NOTIFY_ = null;      // что сделать, когда ожидание затянулось
+var GEMINI_SLOW_NOTIFIED_ = false;   // уже сказали — второй раз не повторяем
+
+/**
+ * Кому и как сообщить о задержке. Вызывающий код передаёт функцию перед
+ * обращением к модели и снимает её (null) после — предупреждение уходит
+ * не больше одного раза на сообщение.
+ */
+function setSlowNotice_(fn) {
+  GEMINI_SLOW_NOTIFY_ = fn || null;
+  GEMINI_SLOW_NOTIFIED_ = false;
+}
+
+/**
+ * Проверка «не пора ли предупредить». Зовётся в точках, где скрипт
+ * просыпается между запросами к модели: изнутри висящего запроса
+ * сделать ничего нельзя — таймаута у UrlFetchApp нет.
+ */
+function noticeIfSlow_(startedAt) {
+  if (!GEMINI_SLOW_NOTIFY_ || GEMINI_SLOW_NOTIFIED_) return false;
+  if (new Date().getTime() - startedAt < GEMINI_SLOW_NOTICE_MS) return false;
+  GEMINI_SLOW_NOTIFIED_ = true;
+  try {
+    GEMINI_SLOW_NOTIFY_();
+  } catch (err) {
+    logEvent_('Не удалось предупредить о задержке', String(err));
+  }
+  return true;
 }
 
 /**
@@ -90,6 +133,7 @@ function geminiJson_(options) {
         logEvent_('Перебор моделей остановлен по времени', { осталось: spares.slice(i).join(', ') });
         break;
       }
+      noticeIfSlow_(started);
       logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spares[i] });
       var quotaWasOut = GEMINI_QUOTA_OUT_;
       raw = geminiFetchWithRetry_(
@@ -217,10 +261,19 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
   for (var attempt = 0; attempt < delays.length; attempt++) {
     // Сам запрос в часы пик висит по полминуты, поэтому следим не за числом
     // попыток, а за общим временем: человек ждёт ответа в чате
-    if (attempt && new Date().getTime() - started > GEMINI_TIME_BUDGET_MS) {
-      logEvent_('Повторы прекращены по времени', { попыток: attempt });
+    // Следим не за числом попыток, а за временем — и за отпущенным на модель,
+    // и за общим временем запуска: Google обрывает скрипт на шестой минуте
+    // молча, и тогда человек не получит ни записи, ни объяснения
+    if (attempt && (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS ||
+        runElapsedMs_() > RUN_LIMIT_MS)) {
+      logEvent_('Повторы прекращены по времени', {
+        попыток: attempt,
+        наМодель: Math.round((new Date().getTime() - started) / 1000) + ' с',
+        отНачала: Math.round(runElapsedMs_() / 1000) + ' с'
+      });
       break;
     }
+    if (attempt) noticeIfSlow_(started);
     if (delays[attempt]) Utilities.sleep(delays[attempt]);
     try {
       var response = UrlFetchApp.fetch(url, {
