@@ -576,9 +576,35 @@ post({ message: msg({ document: { file_id: 'doc4', mime_type: 'application/pdf' 
 check('чек дочитан запасной моделью', rowsCount() === beforeSpare + 1,
   'добавлено: ' + (rowsCount() - beforeSpare));
 check('к запасной модели обращались', modelsAsked.some(u => /flash-lite/.test(u)));
-check('основную пробовали несколько раз',
-  modelsAsked.filter(u => !/flash-lite/.test(u)).length >= 3,
+// Повторять запрос к занятой модели — минуты впустую: очередь у неё общая
+// на всех. Поэтому на «много желающих» бот уходит к соседней сразу
+check('занятую модель не долбим повторами',
+  modelsAsked.filter(u => !/flash-lite/.test(u)).length === 1,
   'попыток: ' + modelsAsked.filter(u => !/flash-lite/.test(u)).length);
+
+// Перегрузка держится волнами, и следующий чек разумнее сразу отдать той,
+// что свободна: 25.08.2026 три чека подряд ушли в одну и ту же занятую модель.
+// Пометки от прошлых сценариев убираем — здесь важна только свежая
+Object.keys(M.cache).forEach(k => { if (k.indexOf('busy_') === 0) delete M.cache[k]; });
+const mainModel = call('modelForMedia_');
+call('rememberBusyModel_', mainModel);
+check('перегруженная модель запомнена', call('isModelBusy_', mainModel));
+
+const modelsAgain = [];
+gemini({ receipt: (payload, url) => {
+  modelsAgain.push(String(url));
+  return /flash-lite/.test(String(url))
+    ? { receipts: [{ total: 17, currency: 'ILS', datetime: '', store: 'Запасная',
+        category: 'Продукты', subcategory: '', items: [], tips: 0, readable: true, note: '' }] }
+    : null;
+} });
+post({ message: msg({ document: { file_id: 'doc6', mime_type: 'application/pdf' } }) });
+check('следующий чек не начинает с занятой модели',
+  modelsAgain.length && modelsAgain[0].indexOf('/' + mainModel + ':') === -1,
+  'первой спросили: ' + String(modelsAgain[0]).split('/models/')[1]);
+check('и всё-таки дочитан', rowsCount() === beforeSpare + 2,
+  'добавлено: ' + (rowsCount() - beforeSpare));
+Object.keys(M.cache).forEach(k => { if (k.indexOf('busy_') === 0) delete M.cache[k]; });
 
 // Занята бывает не одна модель, а всё поколение сразу. Тогда бот спускается
 // к тому, что есть в каталоге ключа, — иначе чек теряется на ровном месте.
@@ -610,9 +636,11 @@ const beforeQuota = rowsCount();
 post({ message: msg({ document: { file_id: 'doc6', mime_type: 'application/pdf' } }) });
 check('чек записан несмотря на исчерпанную квоту', rowsCount() === beforeQuota + 1,
   'добавлено: ' + (rowsCount() - beforeQuota));
+// Суть: ни одну модель не спрашиваем дважды. Сколько их будет в цепочке,
+// зависит от того, кто в этот момент занят, а вот повтор — всегда впустую
+const quotaNames = quotaCalls.map(u => u.split('/models/')[1].split(':')[0]);
 check('исчерпанную модель не долбили повторами',
-  quotaCalls.filter(u => !/flash-lite/.test(u)).length === 1,
-  'попыток: ' + quotaCalls.filter(u => !/flash-lite/.test(u)).length);
+  new Set(quotaNames).size === quotaNames.length, quotaNames.join(', '));
 
 // Исчерпанную модель бот запоминает до конца суток и в следующий раз даже
 // не пробует: иначе каждый чек начинался бы с ожидания впустую

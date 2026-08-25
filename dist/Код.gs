@@ -54,7 +54,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.18.0';
+var BOT_VERSION = '1.18.1';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -1339,7 +1339,18 @@ var GEMINI_QUOTA_OUT_ = false;
 // Сколько всего времени отводим на один разбор со всеми повторами и сменой
 // моделей. Скрипту Google даёт шесть минут на запуск, и часть их нужна на
 // запись расхода с ответом — поэтому берём меньше половины.
-var GEMINI_TIME_BUDGET_MS = 90000;
+var GEMINI_TIME_BUDGET_MS = 200000;
+
+// Сколько ждём от ОДНОЙ модели, прежде чем взяться за следующую. Повторять
+// запрос к модели, которая только что ответила «у меня очередь», — самое
+// дорогое из возможного: 25.08.2026 такой запрос висел две с половиной
+// минуты, и до свободных моделей очередь так и не дошла.
+var GEMINI_MODEL_BUDGET_MS = 45000;
+
+// Насколько запоминаем, что модель перегружена. Без этого каждый следующий
+// чек начинал бы с тех же граблей: в тот день три чека подряд ушли в одну
+// и ту же занятую модель.
+var GEMINI_BUSY_MEMORY_SEC = 600;
 
 // Когда начали обрабатывать входящее сообщение. Google убивает скрипт через
 // шесть минут без предупреждения — а на длинном чеке бот успевает и перебрать
@@ -1350,10 +1361,47 @@ var GEMINI_TIME_BUDGET_MS = 90000;
 // секунде, и человек не получил ничего — ни записи, ни объяснения. Чем раньше
 // бот сдаётся, тем вернее успевает сказать об этом вслух.
 var RUN_STARTED_ = new Date().getTime();
-var RUN_LIMIT_MS = 180000;
+var RUN_LIMIT_MS = 240000;
 
 function runElapsedMs_() {
   return new Date().getTime() - RUN_STARTED_;
+}
+
+// ---------------------------------------------------------------------------
+// Какая модель сейчас занята
+// ---------------------------------------------------------------------------
+
+/**
+ * Имя модели из адреса запроса — оно там между /models/ и двоеточием.
+ */
+function modelFromUrl_(url) {
+  return decodeURIComponent(String(String(url).split('/models/')[1] || '').split(':')[0]);
+}
+
+function busyModelKey_(model) {
+  return 'busy_' + model;
+}
+
+/**
+ * Помечает модель занятой на ближайшие минуты. Перегрузка у Google держится
+ * волнами, и следующий чек разумнее сразу отдать соседней модели.
+ */
+function rememberBusyModel_(model) {
+  if (!model) return;
+  try {
+    CacheService.getScriptCache().put(busyModelKey_(model), '1', GEMINI_BUSY_MEMORY_SEC);
+  } catch (err) {
+    // Кэш — удобство, а не условие работы
+  }
+}
+
+function isModelBusy_(model) {
+  if (!model) return false;
+  try {
+    return !!CacheService.getScriptCache().get(busyModelKey_(model));
+  } catch (err) {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,14 +1486,28 @@ function geminiJson_(options) {
   }
 
   var started = new Date().getTime();
-  var url = GEMINI_ENDPOINT + encodeURIComponent(options.model) + ':generateContent?key=' + encodeURIComponent(key);
+
+  // Модель, которая недавно отвечала «у меня очередь», скорее всего занята
+  // и сейчас: волна спроса держится минутами. Начинать с неё — значит опять
+  // потерять минуту-другую, поэтому берём свободную из того же списка
+  var model = options.model;
+  if (!options.noFallback && isModelBusy_(model)) {
+    var free = spareModels_(model).filter(function (name) { return !isModelBusy_(name); });
+    if (free.length) {
+      logEvent_('Модель недавно была перегружена, начинаем с запасной',
+        { было: model, стало: free[0] });
+      model = free[0];
+    }
+  }
+
+  var url = GEMINI_ENDPOINT + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key);
   var raw = geminiFetchWithRetry_(url, body, options.attempts, started);
 
   // Перегружена бывает не «вся Gemini», а конкретная модель — причём
   // соседняя версия того же поколения обычно занята заодно с ней. Поэтому
   // спускаемся по списку доступных моделей, пока кто-нибудь не ответит.
   if (!raw && GEMINI_BUSY_ && !options.noFallback) {
-    var spares = spareModels_(options.model);
+    var spares = spareModels_(model);
     for (var i = 0; i < spares.length && !raw; i++) {
       if (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS ||
           runElapsedMs_() > RUN_LIMIT_MS) {
@@ -1453,7 +1515,7 @@ function geminiJson_(options) {
         break;
       }
       noticeIfSlow_(started);
-      logEvent_('Модель перегружена, пробуем запасную', { было: options.model, стало: spares[i] });
+      logEvent_('Модель перегружена, пробуем запасную', { было: model, стало: spares[i] });
       var quotaWasOut = GEMINI_QUOTA_OUT_;
       raw = geminiFetchWithRetry_(
         GEMINI_ENDPOINT + encodeURIComponent(spares[i]) + ':generateContent?key=' + encodeURIComponent(key),
@@ -1462,6 +1524,8 @@ function geminiJson_(options) {
       // Если прежняя модель выбыла до конца суток, а эта ответила — закрепляем
       // её в настройках. Иначе каждый следующий чек снова начинал бы с той,
       // что уже исчерпана, и ждал бы впустую
+      // Сверяемся с настройкой, а не с моделью, которую спросили: стартовую
+      // могли подменить из-за перегрузки, а закрепляют — вместо исчерпанной
       if (raw && quotaWasOut && options.model === modelForMedia_()) {
         // Запоминаем, кого пришлось потеснить: как только у неё обновится
         // суточный лимит, бот вернётся обратно сам
@@ -1575,19 +1639,22 @@ function rememberExhaustedModel_(model) {
  */
 function geminiFetchWithRetry_(url, body, attempts, startedAt) {
   var delays = [0, 1500, 4000, 8000, 15000].slice(0, attempts || 5);
-  var started = startedAt || new Date().getTime();
+  var started = startedAt || new Date().getTime();   // начало всего разбора
+  var modelStarted = new Date().getTime();           // начало работы с этой моделью
+  var modelName = modelFromUrl_(url);
   var busy = false;
   for (var attempt = 0; attempt < delays.length; attempt++) {
-    // Сам запрос в часы пик висит по полминуты, поэтому следим не за числом
-    // попыток, а за общим временем: человек ждёт ответа в чате
-    // Следим не за числом попыток, а за временем — и за отпущенным на модель,
-    // и за общим временем запуска: Google обрывает скрипт на шестой минуте
+    // Сам запрос в часы пик висит по полминуты, а то и по три, поэтому следим
+    // не за числом попыток, а за временем: своим у каждой модели, общим
+    // у разбора и общим у запуска — Google обрывает скрипт на шестой минуте
     // молча, и тогда человек не получит ни записи, ни объяснения
-    if (attempt && (new Date().getTime() - started > GEMINI_TIME_BUDGET_MS ||
+    if (attempt && (new Date().getTime() - modelStarted > GEMINI_MODEL_BUDGET_MS ||
+        new Date().getTime() - started > GEMINI_TIME_BUDGET_MS ||
         runElapsedMs_() > RUN_LIMIT_MS)) {
       logEvent_('Повторы прекращены по времени', {
+        модель: modelName,
         попыток: attempt,
-        наМодель: Math.round((new Date().getTime() - started) / 1000) + ' с',
+        наМодель: Math.round((new Date().getTime() - modelStarted) / 1000) + ' с',
         отНачала: Math.round(runElapsedMs_() / 1000) + ' с'
       });
       break;
@@ -1612,20 +1679,28 @@ function geminiFetchWithRetry_(url, body, attempts, startedAt) {
 
       if (code === 429 || code >= 500) {
         busy = true;
-        logEvent_('Gemini временная ошибка', { code: code, attempt: attempt + 1, body: text.substring(0, 1000) });
+        rememberBusyModel_(modelName);
+        logEvent_('Gemini временная ошибка', {
+          модель: modelName, code: code, attempt: attempt + 1, body: text.substring(0, 1000)
+        });
 
         // 429 бывает двух видов: «слишком часто» лечится паузой, а «кончилась
         // дневная квота» — нет, её ждать до полуночи. Во втором случае
         // повторы только тратят время: сразу уходим к другой модели, у неё
         // счётчик свой
         if (code === 429 && /quota|per day|daily/i.test(text)) {
-          var spentModel = decodeURIComponent(String(url.split('/models/')[1] || '').split(':')[0]);
-          logEvent_('Дневная квота модели исчерпана', { модель: spentModel });
-          rememberExhaustedModel_(spentModel);
+          logEvent_('Дневная квота модели исчерпана', { модель: modelName });
+          rememberExhaustedModel_(modelName);
           GEMINI_QUOTA_OUT_ = true;
           break;
         }
-        continue; // имеет смысл повторить
+
+        // «Слишком много желающих» повтором той же модели не лечится: очередь
+        // у неё общая на всех, а соседняя в этот момент обычно свободна.
+        // Уходим к ней сразу, не тратя минуты на вторую попытку к занятой
+        if (code >= 500) break;
+
+        continue; // 429 «слишком часто» — стоит переждать паузой
       }
 
       if (code === 404) {
@@ -7976,10 +8051,10 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "25.08.2026";
 
 var BOT_CHANGES = [
-  "Бот больше не молчит над чеком. На любой чек он сразу отвечает «Взял чек, читаю…» — раньше так было только с PDF, а снимок разбирался молча. 25 августа Google отвечал по пять минут, и это выглядело как сломанный бот",
-  "Если распознавание затянулось дольше полуминуты, бот один раз предупреждает, что Google отвечает медленно и он продолжает ждать",
-  "Бот раньше сдаётся и успевает сказать «не вышло». Google обрывает скрипт на шестой минуте без предупреждения: в тот день один запрос к перегруженной модели висел почти пять минут, скрипт убили, и человек не получил ни записи, ни объяснения. Теперь общий счёт времени проверяется и между повторами, а не только при смене модели",
-  "А если оборвать всё-таки успели — бот скажет об этом при следующем сообщении: «прошлый чек дочитать не успел, пришлите ещё раз»"
+  "Занятую модель бот больше не уговаривает. Раньше на ответ «сейчас много желающих» он повторял запрос к ней же — а каждая такая попытка висит минутами. 25 августа два повтора съели 194 секунды, время вышло, и пять свободных моделей остались нетронутыми: чек не прочитался при живых запасных. Теперь на перегрузку бот сразу переходит к следующей модели",
+  "Перегрузка запоминается на десять минут: следующий чек уходит уже к свободной модели, а не к тем же граблям. Три чека подряд в тот день начинались с одной и той же занятой модели",
+  "На одну модель отводится 45 секунд, на весь разбор — три с небольшим минуты. За это время бот успевает обойти три-четыре модели вместо двух попыток к одной",
+  "В журнале у каждой ошибки теперь видно, какая именно модель отвечала"
 ];
 
 
