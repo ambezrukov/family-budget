@@ -6,5 +6,8 @@
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@vercel/functions": "^3.9.5"
   }
 }
