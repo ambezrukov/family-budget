@@ -177,17 +177,6 @@
   .cat-track { height: 6px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
   .cat-fill { height: 100%; background: var(--accent); border-radius: 4px; }
 
-  /* ---------- Кто сколько ---------- */
-  .authors { display: flex; gap: 0.6rem; flex-wrap: wrap; }
-  .author {
-    flex: 1 1 8rem;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 0.6rem 0.75rem;
-  }
-  .author-name { font-size: 0.82rem; color: var(--ink-muted); }
-  .author-sum { font-size: 1.15rem; font-weight: 650; font-variant-numeric: tabular-nums; }
-
   /* ---------- Список трат ---------- */
   .rows { display: flex; flex-direction: column; }
   .row {
@@ -228,6 +217,20 @@
     text-decoration: underline;
     text-underline-offset: 2px;
   }
+  /* Раскрытие остальных записей: первая строка внутри — уже не первая
+     в карточке, поэтому линию сверху ей возвращаем */
+  .more > summary {
+    cursor: pointer;
+    list-style: none;
+    color: var(--accent);
+    font-size: 0.85rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--line);
+  }
+  .more > summary::-webkit-details-marker { display: none; }
+  .more[open] > summary { margin-bottom: 0.2rem; }
+  .more .row:first-child { border-top: none; }
+
   .row.removed { opacity: 0.4; }
   .row.removed .row-main { text-decoration: line-through; }
 
@@ -558,6 +561,27 @@
     return month ? parseInt(parts[0], 10) + ' ' + month : date;
   }
 
+  // Сколько записей видно до раскрытия списка
+  var VISIBLE_ROWS = 5;
+
+  function recordRows(items) {
+    return items.map(function (item) {
+      var title = item.description || item.store || item.category;
+      return '<div class="row" data-id="' + item.id + '">' +
+        '<div class="row-main">' + escapeHtml(title) + '</div>' +
+        '<div class="row-sum">' + money(item.amount, item.currency) + '</div>' +
+        '<div class="row-meta"><span>' + item.date + '</span>' +
+        '<span class="tag">' + escapeHtml(item.category) + '</span>' +
+        (item.store ? '<span>' + escapeHtml(item.store) + '</span>' : '') +
+        '<span>' + escapeHtml(item.author) + '</span>' +
+        // Траты из выписок не удаляются: это слепок движения по счёту
+        (item.fromStatement
+          ? '<span class="tag">' + escapeHtml(item.sourceType || 'выписка') + '</span>'
+          : '<button class="row-delete" data-delete="' + item.id + '">удалить</button>') +
+        '</div></div>';
+    }).join('');
+  }
+
   function sourcesCard(data) {
     if (!data.sources || !data.sources.length) return '';
 
@@ -606,32 +630,17 @@
         }).join('')
       : '<div class="empty">Пока ничего не записано</div>';
 
-    var authors = data.authors.length > 1
-      ? '<div class="card"><h2>Кто сколько потратил</h2><div class="authors">' +
-        data.authors.map(function (a) {
-          return '<div class="author"><div class="author-name">' + escapeHtml(a.name) +
-            '</div><div class="author-sum">' + money(a.sum, data.currency) + '</div></div>';
-        }).join('') + '</div></div>'
-      : '';
 
     var rows = data.expenses.length
-      ? data.expenses.map(function (item) {
-          var title = item.description || item.store || item.category;
-          var meta = [item.date, escapeHtml(item.category)];
-          if (item.store && item.description !== item.store) meta.push(escapeHtml(item.store));
-          return '<div class="row" data-id="' + item.id + '">' +
-            '<div class="row-main">' + escapeHtml(title) + '</div>' +
-            '<div class="row-sum">' + money(item.amount, item.currency) + '</div>' +
-            '<div class="row-meta"><span>' + item.date + '</span>' +
-            '<span class="tag">' + escapeHtml(item.category) + '</span>' +
-            (item.store ? '<span>' + escapeHtml(item.store) + '</span>' : '') +
-            '<span>' + escapeHtml(item.author) + '</span>' +
-            // Траты из выписок не удаляются: это слепок движения по счёту
-            (item.fromStatement
-              ? '<span class="tag">' + escapeHtml(item.sourceType || 'выписка') + '</span>'
-              : '<button class="row-delete" data-delete="' + item.id + '">удалить</button>') +
-            '</div></div>';
-        }).join('')
+      ? recordRows(data.expenses.slice(0, VISIBLE_ROWS)) +
+        // Записей за месяц под сотню, и вся страница из-за них превращалась
+        // в бесконечную ленту. На виду свежие, остальные — по запросу
+        (data.expenses.length > VISIBLE_ROWS
+          ? '<details class="more"><summary>Ещё ' +
+            (data.expenses.length - VISIBLE_ROWS) + ' ' +
+            plural(data.expenses.length - VISIBLE_ROWS, ['запись', 'записи', 'записей']) +
+            '</summary>' + recordRows(data.expenses.slice(VISIBLE_ROWS)) + '</details>'
+          : '')
       : '<div class="empty">За этот месяц записей нет</div>';
 
     app.innerHTML =
@@ -646,7 +655,6 @@
         (data.total > 0 ? '<div class="card"><h2>По дням</h2>' + dailyChart(data.daily, data.currency) + '</div>' : '') +
         '<div class="card"><h2>По категориям</h2>' + categories + '</div>' +
         incomeCard(data) +
-        authors +
         '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
         upcomingCard(data) +
         deletedCard(data) +
