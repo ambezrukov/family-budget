@@ -25,7 +25,9 @@ export default async function handler(request, response) {
   }
 
   const secret = process.env.WEBHOOK_SECRET;
-  const mode = request.body && request.body.action === 'delete' ? 'delete' : 'data';
+  // Страница просит одно из трёх: показать данные, удалить запись, вернуть её
+  const action = request.body && request.body.action;
+  const mode = action === 'delete' || action === 'restore' ? action : 'data';
 
   const url = new URL(target);
   url.searchParams.set('mode', mode);

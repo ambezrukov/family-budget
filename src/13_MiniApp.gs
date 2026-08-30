@@ -205,6 +205,22 @@ function miniAppPayload_(monthKey) {
     // Памятка «что откуда выгружать»: раз в неделю нужно обойти четыре
     // кабинета, и держать этот список в голове незачем
     sources: miniAppSources_(),
+    // Сколько ещё уйдёт с карт и к какому числу
+    upcoming: miniAppUpcoming_(),
+    // Удалённые записи месяца: кнопка «удалить» срабатывает без переспроса,
+    // и промахнуться мимо соседней строки ничего не стоит
+    deleted: readDeletedRecords_({ from: from, to: to }).map(function (item) {
+      return {
+        id: item.id,
+        date: formatDate_(item.date),
+        amount: item.amount,
+        currency: item.currency,
+        category: item.category,
+        description: item.description || item.store,
+        author: item.author,
+        kind: item.kind
+      };
+    }),
     month: currentKey,
     monthTitle: monthTitle_(month),
     months: months.slice(0, 24),
@@ -311,6 +327,53 @@ function handleMiniAppDelete_(body) {
   var deleted = markExpenseDeleted_(body.id);
   if (deleted) logEvent_('Запись удалена из мини-приложения', { id: body.id, user: check.name });
   return { ok: deleted, error: deleted ? '' : 'Запись не найдена' };
+}
+
+/**
+ * Возврат удалённой записи. Удаление мягкое, поэтому вернуть можно что угодно
+ * и когда угодно — строка всё это время лежит на месте с пометкой.
+ */
+function handleMiniAppRestore_(body) {
+  var check = verifyTelegramInitData_(body.initData);
+  if (!check.ok) return { ok: false, error: check.error };
+
+  var restored = markExpenseRestored_(body.id);
+  if (restored) logEvent_('Запись возвращена из мини-приложения', { id: body.id, user: check.name });
+  return { ok: restored, error: restored ? '' : 'Запись не найдена' };
+}
+
+/**
+ * Предстоящие списания для страницы: даты, карты и суммы.
+ */
+function miniAppUpcoming_() {
+  var data = upcomingCharges_({});
+
+  return {
+    asOf: data.asOf ? formatDate_(data.asOf) : '',
+    total: Math.round(data.groups.reduce(function (sum, group) {
+      return sum + group.amount;
+    }, 0) * 100) / 100,
+    groups: data.groups.map(function (group) {
+      return {
+        date: formatDate_(group.date),
+        card: group.card,
+        title: group.title,
+        issuer: group.issuer,
+        owner: group.owner,
+        amount: Math.round(group.amount * 100) / 100,
+        count: group.count,
+        // Сколько из суммы — платежи по рассрочке, которых в выписке ещё нет
+        forecast: Math.round(group.forecast * 100) / 100
+      };
+    }),
+    later: data.later
+      ? {
+          count: data.later.count,
+          monthly: Math.round(data.later.monthly * 100) / 100,
+          until: data.later.until ? formatDate_(data.later.until) : ''
+        }
+      : null
+  };
 }
 
 // ---------------------------------------------------------------------------

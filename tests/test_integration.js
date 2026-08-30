@@ -1778,6 +1778,87 @@ check('без подписи телеграма удалить нельзя', de
 check('запись дохода находится по идентификатору',
   !!ctx.locateRecord_(incomeToDelete), String(incomeToDelete));
 
+// Удаление мягкое, поэтому промах по кнопке лечится возвратом
+console.log('\n=== Возврат удалённой записи ===');
+
+const totalBefore = call('miniAppPayload_', '').incomeTotal;
+const doomed = payload.incomes[0];
+check('пометка удаления поставлена', call('markExpenseDeleted_', doomed.id) === true);
+
+const afterDelete = call('miniAppPayload_', '');
+check('удалённая запись выпала из итога',
+  Math.abs(afterDelete.incomeTotal - (totalBefore - doomed.amount)) < 0.01,
+  afterDelete.incomeTotal + ' vs ' + (totalBefore - doomed.amount));
+check('она видна в списке удалённых',
+  afterDelete.deleted.some(item => item.id === doomed.id),
+  JSON.stringify(afterDelete.deleted).slice(0, 120));
+check('у удалённой видно, доход это или трата',
+  afterDelete.deleted.filter(item => item.id === doomed.id)[0].kind === 'доход',
+  JSON.stringify(afterDelete.deleted[0]));
+
+check('без подписи телеграма вернуть нельзя',
+  call('handleMiniAppRestore_', { initData: '', id: doomed.id }).ok === false);
+check('возврат снимает пометку', call('markExpenseRestored_', doomed.id) === true);
+
+const afterRestore = call('miniAppPayload_', '');
+check('итог вернулся к прежнему', Math.abs(afterRestore.incomeTotal - totalBefore) < 0.01,
+  afterRestore.incomeTotal + ' vs ' + totalBefore);
+check('из списка удалённых запись ушла',
+  !afterRestore.deleted.some(item => item.id === doomed.id),
+  JSON.stringify(afterRestore.deleted).slice(0, 120));
+check('несуществующую запись вернуть нельзя',
+  call('markExpenseRestored_', 'нет-такой-записи') === false);
+
+// --- Предстоящие списания ----------------------------------------------------
+console.log('\n=== Скоро спишется ===');
+
+// Карта живёт не по календарю: покупки августа Cal снимет 2 сентября, а
+// автокредит идёт своим чередом до конца срока
+call('handleDirectoryUpload_', { chat: { id: 555 }, from: HUSBAND }, [
+  '/spravochnik карты',
+  '6528 | max | Max | Толя | автокредит | 15 | активна'
+].join('\n'));
+
+const today = new Date();
+const soon = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 5);
+const longAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30);
+
+call('saveOperations_', [
+  { date: soon, chargeDate: soon, amount: 300, currency: 'ILS', source: 'Max', card: '6528',
+    merchant: 'магазин', kind: 'покупка', key: 'up:1', note: '' },
+  { date: soon, chargeDate: soon, amount: 500, currency: 'ILS', source: 'Max', card: '6528',
+    merchant: 'קיה', kind: 'рассрочка', key: 'up:2', note: 'תשלום 2 מתוך 5' },
+  { date: longAgo, chargeDate: longAgo, amount: 999, currency: 'ILS', source: 'Max', card: '6528',
+    merchant: 'старое', kind: 'покупка', key: 'up:3', note: '' }
+], 'выписка.xlsx', 'ключ-предстоящие');
+
+const upcoming = call('upcomingCharges_', {});
+const nearest = upcoming.groups[0];
+check('ближайшее списание собрано в одну дату', upcoming.groups.length >= 1 && nearest.count === 2,
+  JSON.stringify(upcoming.groups).slice(0, 160));
+check('сумма ближайшего списания = 800', Math.abs(nearest.amount - 800) < 0.01,
+  String(nearest.amount));
+check('уже списанное не показывается',
+  !upcoming.groups.some(group => group.date < new Date(today.getFullYear(), today.getMonth(), today.getDate())),
+  JSON.stringify(upcoming.groups.map(g => g.date)));
+check('в списке видно, чья карта', nearest.title === 'max' && nearest.owner === 'Толя',
+  nearest.title + ' / ' + nearest.owner);
+
+// «תשלום 2 מתוך 5» — впереди ещё три платежа по 500
+const forecast = upcoming.groups.filter(group => group.forecast > 0);
+check('будущие платежи по рассрочке добавлены', forecast.length >= 1,
+  JSON.stringify(upcoming.groups.map(g => [g.date, g.amount, g.forecast])).slice(0, 200));
+check('за горизонтом рассрочка свёрнута в строку',
+  !upcoming.later || upcoming.later.count > 0,
+  JSON.stringify(upcoming.later));
+
+const withUpcoming = call('miniAppPayload_', '');
+check('страница получает предстоящие списания',
+  withUpcoming.upcoming && withUpcoming.upcoming.groups.length > 0,
+  JSON.stringify(withUpcoming.upcoming).slice(0, 140));
+check('у предстоящих есть дата последней выгрузки',
+  typeof withUpcoming.upcoming.asOf === 'string', String(withUpcoming.upcoming.asOf));
+
 // --- Обновления --------------------------------------------------------------
 console.log('\n=== Обновление бота ===');
 

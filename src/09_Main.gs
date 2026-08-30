@@ -30,10 +30,10 @@ function doPost(e) {
 
     // Запрос от мини-приложения, а не сообщение от телеграма
     var mode = e.parameter ? e.parameter.mode : '';
-    if (mode === 'data' || mode === 'delete') {
-      var answer = mode === 'data'
-        ? handleMiniAppRequest_(body)
-        : handleMiniAppDelete_(body);
+    if (mode === 'data' || mode === 'delete' || mode === 'restore') {
+      var answer = mode === 'data' ? handleMiniAppRequest_(body)
+        : mode === 'delete' ? handleMiniAppDelete_(body)
+        : handleMiniAppRestore_(body);
       return ContentService
         .createTextOutput(JSON.stringify(answer))
         .setMimeType(ContentService.MimeType.JSON);

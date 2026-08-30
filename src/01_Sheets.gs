@@ -276,11 +276,73 @@ function readExpenseById_(id) {
 /**
  * Помечает запись удалённой (физически строка остаётся).
  */
+/**
+ * Дата ли это. Через `instanceof Date` проверять нельзя: значение из таблицы
+ * приходит из другого контекста выполнения, и проверка молча даёт «нет» —
+ * ровно так дата последнего импорта превращалась в пустоту.
+ */
+function isDateValue_(value) {
+  return Object.prototype.toString.call(value) === '[object Date]';
+}
+
 function markExpenseDeleted_(id) {
   var found = locateRecord_(id);
   if (!found) return false;
   found.sheet.getRange(found.row, COL_DELETED).setValue('да');
   return true;
+}
+
+/**
+ * Снимает пометку удаления: запись возвращается в отчёты и мини-приложение.
+ *
+ * Удаление у нас мягкое — строка остаётся на месте, — поэтому возврат сводится
+ * к очистке одной ячейки. Нужен он чаще, чем кажется: кнопка «удалить» в
+ * мини-приложении срабатывает сразу, и промахнуться мимо соседней строки
+ * ничего не стоит.
+ */
+function markExpenseRestored_(id) {
+  var found = locateRecord_(id);
+  if (!found) return false;
+  found.sheet.getRange(found.row, COL_DELETED).setValue('');
+  return true;
+}
+
+/**
+ * Удалённые записи обоих листов — чтобы было что возвращать.
+ * Порядок: сверху свежие.
+ */
+function readDeletedRecords_(options) {
+  options = options || {};
+  var result = [];
+
+  [SHEET_EXPENSES, SHEET_INCOMES].forEach(function (sheetName) {
+    var sheet = ensureSheet_(sheetName, EXPENSE_COLUMNS);
+    var last = sheet.getLastRow();
+    if (last < 2) return;
+
+    sheet.getRange(2, 1, last - 1, EXPENSE_COLUMNS.length).getValues().forEach(function (r) {
+      if (String(r[COL_DELETED - 1]).trim() === '') return;
+      var date = r[COL_DATE - 1] instanceof Date ? r[COL_DATE - 1] : parseCellDate_(r[COL_DATE - 1]);
+      if (!date) return;
+      if (options.from && date < options.from) return;
+      if (options.to && date > options.to) return;
+
+      result.push({
+        date: date,
+        amount: Number(r[COL_AMOUNT - 1]) || 0,
+        currency: String(r[COL_CURRENCY - 1] || ''),
+        category: String(r[COL_CATEGORY - 1] || ''),
+        description: String(r[COL_DESCRIPTION - 1] || ''),
+        store: String(r[COL_STORE - 1] || ''),
+        author: String(r[COL_AUTHOR - 1] || ''),
+        kind: sheetName === SHEET_INCOMES ? 'доход' : 'расход',
+        id: String(r[COL_ID - 1] || '')
+      });
+    });
+  });
+
+  result.sort(function (a, b) { return b.date - a.date; });
+  return result;
 }
 
 /**

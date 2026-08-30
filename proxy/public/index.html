@@ -251,6 +251,29 @@
 
   .empty { color: var(--ink-muted); font-size: 0.92rem; }
 
+  /* ---------- Предстоящие списания ---------- */
+  .up {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    border-top: 1px solid var(--line);
+    padding: 0.55rem 0;
+  }
+  .up:first-of-type { border-top: none; }
+  .up-when { font-size: 0.95rem; font-weight: 600; white-space: nowrap; }
+  .up-what { font-size: 0.8rem; color: var(--ink-muted); margin-top: 0.15rem; }
+  .up-sum { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .up-total {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+    border-top: 2px solid var(--line);
+    padding-top: 0.6rem;
+    margin-top: 0.3rem;
+  }
+  .up-note { font-size: 0.8rem; color: var(--ink-muted); margin-top: 0.6rem; }
+
   /* ---------- Загрузка выписок ---------- */
   .src { border-top: 1px solid var(--line); padding: 0.7rem 0; }
   .src:first-of-type { border-top: none; }
@@ -459,6 +482,82 @@
 
   // Памятка обхода кабинетов: раз в неделю нужно забрать четыре файла, и
   // держать в голове, где какая кнопка, незачем. Свёрнута, чтобы не мешать.
+  // Сколько ещё уйдёт с карт. Карта живёт не по календарю: покупки августа
+  // Cal снимет 2 сентября, Isracard — 15-го, а автокредит идёт своим чередом
+  function upcomingCard(data) {
+    var up = data.upcoming;
+    if (!up || !up.groups || !up.groups.length) return '';
+
+    var items = up.groups.map(function (group) {
+      var who = [group.title || ('карта ' + group.card), group.owner].filter(Boolean).join(' · ');
+      var what = group.forecast > 0 && group.forecast >= group.amount - 0.01
+        ? 'платёж по рассрочке'
+        : group.count + ' ' + plural(group.count, ['операция', 'операции', 'операций']) +
+          (group.forecast > 0 ? ', из них рассрочка ' + money(group.forecast, data.currency) : '');
+
+      return '<div class="up">' +
+        '<div><div class="up-when">' + escapeHtml(dayLabel(group.date)) + '</div>' +
+        '<div class="up-what">' + escapeHtml(who) + ' · ' + what + '</div></div>' +
+        '<div class="up-sum">' + money(group.amount, data.currency) + '</div>' +
+        '</div>';
+    }).join('');
+
+    var note = [];
+    if (up.later) {
+      note.push('Дальше по рассрочкам — около ' + money(up.later.monthly, data.currency) +
+        ' в месяц, последний платёж ' + escapeHtml(up.later.until) + '.');
+    }
+    // Сумма честна ровно настолько, насколько свежие выгрузки
+    if (up.asOf) note.push('Данные выписок на ' + escapeHtml(up.asOf) + '.');
+
+    return '<div class="card"><h2>Скоро спишется</h2>' + items +
+      '<div class="up-total"><span>Всего</span><span>' + money(up.total, data.currency) + '</span></div>' +
+      (note.length ? '<div class="up-note">' + note.join(' ') + '</div>' : '') +
+      '</div>';
+  }
+
+  // Удалённые записи месяца: кнопка «удалить» срабатывает без переспроса,
+  // и промахнуться мимо соседней строки ничего не стоит
+  function deletedCard(data) {
+    if (!data.deleted || !data.deleted.length) return '';
+
+    var items = data.deleted.map(function (item) {
+      var title = item.description || item.category || (item.kind === 'доход' ? 'доход' : 'трата');
+      return '<div class="row" data-id="' + item.id + '">' +
+        '<div class="row-main">' + escapeHtml(title) + '</div>' +
+        '<div class="row-sum">' + money(item.amount, item.currency) + '</div>' +
+        '<div class="row-meta"><span>' + escapeHtml(item.date) + '</span>' +
+        '<span class="tag">' + escapeHtml(item.kind) + '</span>' +
+        (item.category ? '<span>' + escapeHtml(item.category) + '</span>' : '') +
+        '<button class="row-delete" data-restore="' + item.id + '">вернуть</button>' +
+        '</div></div>';
+    }).join('');
+
+    return '<div class="card"><details><summary>Удалённые записи · ' + data.deleted.length +
+      '</summary><div class="rows">' + items + '</div>' +
+      '<div class="up-note">Запись не стирается, а прячется — вернуть можно в любой момент.</div>' +
+      '</details></div>';
+  }
+
+  function plural(n, forms) {
+    var count = Math.abs(n) % 100;
+    var tail = count % 10;
+    if (count > 10 && count < 20) return forms[2];
+    if (tail > 1 && tail < 5) return forms[1];
+    if (tail === 1) return forms[0];
+    return forms[2];
+  }
+
+  // «02.09.2026» → «2 сентября»: до списания недалеко, год не нужен
+  function dayLabel(date) {
+    var parts = String(date || '').split('.');
+    if (parts.length !== 3) return date;
+    var names = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    var month = names[parseInt(parts[1], 10) - 1];
+    return month ? parseInt(parts[0], 10) + ' ' + month : date;
+  }
+
   function sourcesCard(data) {
     if (!data.sources || !data.sources.length) return '';
 
@@ -549,6 +648,8 @@
         incomeCard(data) +
         authors +
         '<div class="card"><h2>Записи · ' + data.count + '</h2><div class="rows">' + rows + '</div></div>' +
+        upcomingCard(data) +
+        deletedCard(data) +
         sourcesCard(data) +
         sheetLink(data) +
       '</div>';
@@ -585,6 +686,31 @@
       // страницы — просим приложение открыть её снаружи
       event.preventDefault();
       tg.openLink(sheet.getAttribute('href'));
+      return;
+    }
+
+    var back = event.target.closest('[data-restore]');
+    if (back) {
+      var backRow = back.closest('.row');
+      back.disabled = true;
+      back.textContent = 'возвращаю…';
+      request('restore', { id: back.dataset.restore })
+        .then(function (answer) {
+          if (answer.ok) {
+            backRow.classList.add('removed');
+            back.textContent = 'вернул';
+            if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+            // Запись снова в бюджете, а значит изменились и суммы месяца
+            load(state.month);
+          } else {
+            back.disabled = false;
+            back.textContent = 'не вышло';
+          }
+        })
+        .catch(function () {
+          back.disabled = false;
+          back.textContent = 'не вышло';
+        });
       return;
     }
 

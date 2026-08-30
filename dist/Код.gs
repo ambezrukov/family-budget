@@ -54,7 +54,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.19.0';
+var BOT_VERSION = '1.20.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -641,11 +641,73 @@ function readExpenseById_(id) {
 /**
  * Помечает запись удалённой (физически строка остаётся).
  */
+/**
+ * Дата ли это. Через `instanceof Date` проверять нельзя: значение из таблицы
+ * приходит из другого контекста выполнения, и проверка молча даёт «нет» —
+ * ровно так дата последнего импорта превращалась в пустоту.
+ */
+function isDateValue_(value) {
+  return Object.prototype.toString.call(value) === '[object Date]';
+}
+
 function markExpenseDeleted_(id) {
   var found = locateRecord_(id);
   if (!found) return false;
   found.sheet.getRange(found.row, COL_DELETED).setValue('да');
   return true;
+}
+
+/**
+ * Снимает пометку удаления: запись возвращается в отчёты и мини-приложение.
+ *
+ * Удаление у нас мягкое — строка остаётся на месте, — поэтому возврат сводится
+ * к очистке одной ячейки. Нужен он чаще, чем кажется: кнопка «удалить» в
+ * мини-приложении срабатывает сразу, и промахнуться мимо соседней строки
+ * ничего не стоит.
+ */
+function markExpenseRestored_(id) {
+  var found = locateRecord_(id);
+  if (!found) return false;
+  found.sheet.getRange(found.row, COL_DELETED).setValue('');
+  return true;
+}
+
+/**
+ * Удалённые записи обоих листов — чтобы было что возвращать.
+ * Порядок: сверху свежие.
+ */
+function readDeletedRecords_(options) {
+  options = options || {};
+  var result = [];
+
+  [SHEET_EXPENSES, SHEET_INCOMES].forEach(function (sheetName) {
+    var sheet = ensureSheet_(sheetName, EXPENSE_COLUMNS);
+    var last = sheet.getLastRow();
+    if (last < 2) return;
+
+    sheet.getRange(2, 1, last - 1, EXPENSE_COLUMNS.length).getValues().forEach(function (r) {
+      if (String(r[COL_DELETED - 1]).trim() === '') return;
+      var date = r[COL_DATE - 1] instanceof Date ? r[COL_DATE - 1] : parseCellDate_(r[COL_DATE - 1]);
+      if (!date) return;
+      if (options.from && date < options.from) return;
+      if (options.to && date > options.to) return;
+
+      result.push({
+        date: date,
+        amount: Number(r[COL_AMOUNT - 1]) || 0,
+        currency: String(r[COL_CURRENCY - 1] || ''),
+        category: String(r[COL_CATEGORY - 1] || ''),
+        description: String(r[COL_DESCRIPTION - 1] || ''),
+        store: String(r[COL_STORE - 1] || ''),
+        author: String(r[COL_AUTHOR - 1] || ''),
+        kind: sheetName === SHEET_INCOMES ? 'доход' : 'расход',
+        id: String(r[COL_ID - 1] || '')
+      });
+    });
+  });
+
+  result.sort(function (a, b) { return b.date - a.date; });
+  return result;
 }
 
 /**
@@ -5516,10 +5578,10 @@ function doPost(e) {
 
     // Запрос от мини-приложения, а не сообщение от телеграма
     var mode = e.parameter ? e.parameter.mode : '';
-    if (mode === 'data' || mode === 'delete') {
-      var answer = mode === 'data'
-        ? handleMiniAppRequest_(body)
-        : handleMiniAppDelete_(body);
+    if (mode === 'data' || mode === 'delete' || mode === 'restore') {
+      var answer = mode === 'data' ? handleMiniAppRequest_(body)
+        : mode === 'delete' ? handleMiniAppDelete_(body)
+        : handleMiniAppRestore_(body);
       return ContentService
         .createTextOutput(JSON.stringify(answer))
         .setMimeType(ContentService.MimeType.JSON);
@@ -7524,6 +7586,22 @@ function miniAppPayload_(monthKey) {
     // Памятка «что откуда выгружать»: раз в неделю нужно обойти четыре
     // кабинета, и держать этот список в голове незачем
     sources: miniAppSources_(),
+    // Сколько ещё уйдёт с карт и к какому числу
+    upcoming: miniAppUpcoming_(),
+    // Удалённые записи месяца: кнопка «удалить» срабатывает без переспроса,
+    // и промахнуться мимо соседней строки ничего не стоит
+    deleted: readDeletedRecords_({ from: from, to: to }).map(function (item) {
+      return {
+        id: item.id,
+        date: formatDate_(item.date),
+        amount: item.amount,
+        currency: item.currency,
+        category: item.category,
+        description: item.description || item.store,
+        author: item.author,
+        kind: item.kind
+      };
+    }),
     month: currentKey,
     monthTitle: monthTitle_(month),
     months: months.slice(0, 24),
@@ -7630,6 +7708,53 @@ function handleMiniAppDelete_(body) {
   var deleted = markExpenseDeleted_(body.id);
   if (deleted) logEvent_('Запись удалена из мини-приложения', { id: body.id, user: check.name });
   return { ok: deleted, error: deleted ? '' : 'Запись не найдена' };
+}
+
+/**
+ * Возврат удалённой записи. Удаление мягкое, поэтому вернуть можно что угодно
+ * и когда угодно — строка всё это время лежит на месте с пометкой.
+ */
+function handleMiniAppRestore_(body) {
+  var check = verifyTelegramInitData_(body.initData);
+  if (!check.ok) return { ok: false, error: check.error };
+
+  var restored = markExpenseRestored_(body.id);
+  if (restored) logEvent_('Запись возвращена из мини-приложения', { id: body.id, user: check.name });
+  return { ok: restored, error: restored ? '' : 'Запись не найдена' };
+}
+
+/**
+ * Предстоящие списания для страницы: даты, карты и суммы.
+ */
+function miniAppUpcoming_() {
+  var data = upcomingCharges_({});
+
+  return {
+    asOf: data.asOf ? formatDate_(data.asOf) : '',
+    total: Math.round(data.groups.reduce(function (sum, group) {
+      return sum + group.amount;
+    }, 0) * 100) / 100,
+    groups: data.groups.map(function (group) {
+      return {
+        date: formatDate_(group.date),
+        card: group.card,
+        title: group.title,
+        issuer: group.issuer,
+        owner: group.owner,
+        amount: Math.round(group.amount * 100) / 100,
+        count: group.count,
+        // Сколько из суммы — платежи по рассрочке, которых в выписке ещё нет
+        forecast: Math.round(group.forecast * 100) / 100
+      };
+    }),
+    later: data.later
+      ? {
+          count: data.later.count,
+          monthly: Math.round(data.later.monthly * 100) / 100,
+          until: data.later.until ? formatDate_(data.later.until) : ''
+        }
+      : null
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -8051,10 +8176,10 @@ function weeklyUpdateCheck() {
 var BOT_VERSION_DATE = "30.08.2026";
 
 var BOT_CHANGES = [
-  "Выписку Isracard бот читал наполовину. В ней две таблицы: сначала покупки, которые компания ещё не провела, следом проведённые с номерами ваучеров. Разбор начинался со второй, и первая пропадала целиком — 30 августа это 1 522 ₪ по одной карте. Пропажа была тихой: в банковской выписке те же суммы помечены «списание по карте, не трата», так что нигде не всплывали. Теперь читаются все таблицы листа",
-  "Покупка, которая ждёт списания, при следующей выгрузке приходит проведённой и с другим ключом. Раньше она легла бы второй строкой — теперь бот узнаёт её по дате, сумме и магазину и дописывает в уже существующую: категория и склейка с чеком остаются на месте. В отчёте об импорте это «дождались списания»",
-  "Платежи по рассрочке больше не теряются. Выписка датирует их днём покупки — у автокредита за машину это март 2024 года, — и фильтр «учёт с 15.08.2026» отбрасывал каждый месячный платёж. Мимо бюджета так проходили автокредит и секция ребёнка, вместе около 2 400 ₪ в месяц. Теперь такой платёж считается по дате списания, а день покупки виден в примечании",
-  "Для Max дата списания берётся из шапки выгрузки («09/2026») и дня списания карты в справочнике: в самих строках её нет"
+  "В мини-приложении появился блок «Скоро спишется»: по каждой карте видно дату списания и сумму. Считается по датам, которые проставил сам эмитент, поэтому цифра совпадает с кабинетом банка; рядом подписано, на какое число загружены выписки, — свежее них она быть не может",
+  "Туда же попадают будущие платежи по рассрочкам: график известен из примечания («платёж 30 из 60»), и раз в месяц удивляться полутора тысячам за машину больше не придётся. Всё, что дальше полутора месяцев, свёрнуто в строку «дальше по рассрочкам — столько-то в месяц, последний платёж тогда-то»",
+  "Удалённую запись теперь можно вернуть. Кнопка «удалить» срабатывает сразу, без переспроса, а промахнуться мимо соседней строки легко: 30 августа так улетел доход на 8 820 ₪. Удалённые записи месяца собраны в отдельный свёрнутый список с кнопкой «вернуть» у каждой",
+  "Дата из таблицы больше не проверяется через `instanceof`: значение приходит из другого контекста выполнения, и проверка молча давала «нет»"
 ];
 
 
@@ -10326,6 +10451,135 @@ function uncategorizedOperationsCount_() {
   return operationExpenses_({}).filter(function (item) {
     return !item.category || item.category === FALLBACK_CATEGORY;
   }).length;
+}
+
+/**
+ * Сколько и когда спишется с карт — то, что уже известно из выписок.
+ *
+ * Карта живёт не по календарю: покупки августа Cal снимет 2 сентября, Isracard
+ * — 15-го, а автокредит идёт своим чередом до 2029 года. Отсюда вопрос, на
+ * который таблица не отвечала: сколько денег понадобится на счёте и к какому
+ * числу.
+ *
+ * Считается по факту из «Операций» — по датам списания, которые проставил сам
+ * эмитент. Плюс к ним будущие платежи по рассрочкам: их график известен из
+ * примечания («תשלום 30 מתוך 60» — тридцатый из шестидесяти), и не показать их
+ * значило бы каждый месяц удивляться полутора тысячам за машину.
+ *
+ * options.days — горизонт списка в днях (по умолчанию 45). Всё, что дальше,
+ * сворачивается в строку «дальше по рассрочкам».
+ */
+function upcomingCharges_(options) {
+  options = options || {};
+  var horizon = options.days || 45;
+
+  var now = options.now || new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var edge = new Date(today.getFullYear(), today.getMonth(), today.getDate() + horizon);
+
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  if (last < 2) return { groups: [], later: null, asOf: lastImportAt_() };
+
+  var cards = readCards_();
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var buckets = {};
+  var later = { count: 0, monthly: 0, until: null };
+
+  function bucket(date, card, amount) {
+    var key = formatDate_(date) + '|' + card;
+    if (!buckets[key]) {
+      var known = cards[card];
+      buckets[key] = {
+        date: date,
+        card: card,
+        title: known ? known.title : '',
+        issuer: known ? known.issuer : '',
+        owner: known ? known.owner : '',
+        amount: 0,
+        count: 0,
+        forecast: 0
+      };
+    }
+    buckets[key].amount += amount;
+    buckets[key].count++;
+    return buckets[key];
+  }
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (String(row[14]).trim()) continue;                       // «не трата»
+    var kind = String(row[13] || '');
+    if (kind === 'поступление' || kind === 'к сведению') continue;
+
+    var charge = isDateValue_(row[1]) ? row[1] : parseCellDate_(row[1]);
+    if (!charge) continue;
+
+    var amount = Number(row[2]) || 0;
+    if (!amount) continue;
+
+    var card = String(row[8] || '');
+
+    // Уже списанное показывать незачем — вопрос про «сколько ещё уйдёт»
+    if (charge >= today && charge <= edge) bucket(charge, card, amount);
+
+    if (kind !== 'рассрочка') continue;
+
+    // «תשלום 30 מתוך 60»: тридцать платежей позади, тридцать впереди. Без
+    // номера платежа (так выглядит финансирование будущей покупки у Max)
+    // график неизвестен — тогда показываем только ближайшее списание
+    var schedule = String(row[18] || '').match(/(\d+)\s*מתוך\s*(\d+)/);
+    if (!schedule) continue;
+
+    var left = Number(schedule[2]) - Number(schedule[1]);
+    for (var k = 1; k <= left; k++) {
+      var next = new Date(charge.getFullYear(), charge.getMonth() + k, charge.getDate());
+      if (next < today) continue;
+      if (next <= edge) {
+        bucket(next, card, amount).forecast += amount;
+      } else {
+        later.count++;
+        later.monthly += amount;
+        if (!later.until || next > later.until) later.until = next;
+      }
+    }
+  }
+
+  var groups = Object.keys(buckets).map(function (key) { return buckets[key]; });
+  groups.sort(function (a, b) { return a.date - b.date || (a.card > b.card ? 1 : -1); });
+
+  // Платёж одной рассрочки повторяется каждый месяц, поэтому «в месяц» — это
+  // сумма одного круга, а не всех оставшихся платежей сразу
+  if (later.count) {
+    var months = monthsBetween_(today, later.until) || 1;
+    later.monthly = Math.round((later.monthly / months) * 100) / 100;
+  }
+
+  return {
+    groups: groups,
+    later: later.count ? later : null,
+    asOf: lastImportAt_()
+  };
+}
+
+/**
+ * Сколько месяцев между датами — для пересчёта «сколько это в месяц».
+ */
+function monthsBetween_(from, to) {
+  if (!from || !to) return 0;
+  return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+}
+
+/**
+ * Когда последний раз разбирали выписку. Показывается рядом с предстоящими
+ * списаниями: сумма честна ровно настолько, насколько свежие выгрузки.
+ */
+function lastImportAt_() {
+  var journal = ensureSheet_(SHEET_IMPORTS, IMPORT_COLUMNS);
+  var last = journal.getLastRow();
+  if (last < 2) return null;
+  var value = journal.getRange(last, 1, 1, 1).getValues()[0][0];
+  return isDateValue_(value) ? value : null;
 }
 
 
