@@ -305,8 +305,25 @@ console.log('\n=== Учёт ведём не с начала времён ===');
 
 call('updateSetting_', 'Учёт с', '01.06.2026');
 const old = call('importStatementRows_', max, 'max.xlsx', 'файл-2');
-check('строка 2024 года пропущена', old.stats.skipped === 1, String(old.stats.skipped));
-check('свежая строка записана', old.stats.added === 1, String(old.stats.added));
+// Платёж по автокредиту выписка датирует днём покупки — 04.03.2024. Отбрасывать
+// его нельзя: сами деньги уходят 15.06.2026, и в бюджете это трата июня
+check('платёж по рассрочке записан по дате списания', old.stats.added === 2,
+  JSON.stringify(old.stats));
+check('до начала учёта ничего не отброшено', old.stats.skipped === 0, String(old.stats.skipped));
+
+const installment = call('parseStatement_', max, 'max.xlsx').operations
+  .filter(op => op.kind === 'рассрочка')[0];
+check('рассрочка встала июнем 2026', installment &&
+  call('formatDate_', installment.date) === '15.06.2026',
+  installment && call('formatDate_', installment.date));
+check('день покупки сохранён в примечании', installment &&
+  installment.note.indexOf('покупка 04.03.2024') !== -1, installment && installment.note);
+
+// А рассрочка, чей платёж ушёл ещё до начала учёта, по-прежнему не наша
+call('updateSetting_', 'Учёт с', '01.08.2026');
+const older = call('importStatementRows_', max, 'max-старый.xlsx', 'файл-2-старый');
+check('июньское списание раньше отсечки пропущено', older.stats.skipped === 2,
+  JSON.stringify(older.stats));
 
 console.log('\n=== Склейка с ручной записью ===');
 
@@ -577,6 +594,68 @@ const beforeAdd = settingsSheet.getLastRow();
 call('addMissingSettings_', settingsSheet);
 check('повторный проход ничего не дублирует', settingsSheet.getLastRow() === beforeAdd,
   beforeAdd + ' → ' + settingsSheet.getLastRow());
+
+console.log('\n=== Выписка Isracard из двух таблиц ===');
+
+// Выгрузка Isracard устроена так: сначала покупки, которые компания ещё не
+// провела (четыре колонки, ваучера нет), следом проведённые. 30.08.2026 бот
+// читал только вторую таблицу и терял 1 522 ₪ по одной карте — деньги при
+// этом уже ушли, а в банке та же сумма помечена «списание по карте»
+const isracardTwoBlocks = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['על שם', '', '', '', '', '', '', ''],
+  ['עסקאות שטרם נקלטו', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', '', '', '', ''],
+  ['27.08.26', 'חברת החשמל לישראל בע"מ', '937.72', '₪', '', '', '', ''],
+  ['30.08.26', 'Carrefour רמת אלון חיפה', '98', '₪', '', '', '', ''],
+  ['סה"כ עסקאות שטרם נקלטו', '1035.72', '₪', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', 'סכום חיוב', 'מטבע חיוב', "מס' שובר", 'פירוט נוסף'],
+  ['28.08.26', 'פז YELLOW רוממה', '404.72', '₪', '404.72', '₪', '018402795', ''],
+  ['סה"כ', '', '', '', '', '', '', '']
+];
+
+const twoBlocks = call('parseStatement_', isracardTwoBlocks, '9189_09_2026.xlsx');
+check('прочитаны обе таблицы', twoBlocks.ok && twoBlocks.operations.length === 3,
+  twoBlocks.error || String(twoBlocks.operations.length));
+const power = twoBlocks.operations.filter(op => op.merchant.indexOf('החשמל') !== -1)[0];
+check('непроведённая покупка на месте', power && Math.abs(power.amount - 937.72) < 0.01,
+  power && String(power.amount));
+check('она помечена «ждёт списания»', power && power.kind === 'ждёт списания',
+  power && power.kind);
+check('карта взята из шапки', power && power.card === '9189', power && power.card);
+
+console.log('\n=== Покупка дождалась списания ===');
+
+call('updateSetting_', 'Учёт с', '');
+const waitFirst = call('importStatementRows_', isracardTwoBlocks, '9189_09.xlsx', 'ключ-ожидание-1');
+check('первый импорт записал три строки', waitFirst.stats.added === 3,
+  JSON.stringify(waitFirst.stats));
+
+// Через неделю та же покупка приходит проведённой: у неё появился ваучер,
+// а значит и другой ключ. Без учёта ожидания она легла бы второй строкой
+const isracardSettled = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', 'סכום חיוב', 'מטבע חיוב', "מס' שובר", 'פירוט נוסף'],
+  ['27.08.26', 'חברת החשמל לישראל בע"מ', '937.72', '₪', '937.72', '₪', '019887654', ''],
+  ['28.08.26', 'פז YELLOW רוממה', '404.72', '₪', '404.72', '₪', '018402795', '']
+];
+
+const opsBefore = call('ensureSheet_', 'Операции', []).getLastRow();
+const waitSecond = call('importStatementRows_', isracardSettled, '9189_09_поздний.xlsx', 'ключ-ожидание-2');
+check('новых строк не прибавилось', waitSecond.stats.added === 0, JSON.stringify(waitSecond.stats));
+check('ожидание закрыто, а не задвоено', waitSecond.stats.replaced === 1,
+  JSON.stringify(waitSecond.stats));
+check('в листе столько же строк', call('ensureSheet_', 'Операции', []).getLastRow() === opsBefore,
+  opsBefore + ' → ' + call('ensureSheet_', 'Операции', []).getLastRow());
+
+const settledRows = call('ensureSheet_', 'Операции', []).getDataRange().getValues()
+  .filter(row => String(row[10]).indexOf('החשמל') !== -1);
+check('строка про электричество осталась одна', settledRows.length === 1,
+  String(settledRows.length));
+check('её вид сменился на покупку', settledRows.length === 1 && settledRows[0][13] === 'покупка',
+  settledRows.length === 1 ? settledRows[0][13] : '');
 
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

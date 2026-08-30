@@ -27,6 +27,24 @@ var STATEMENT_FORMATS_ = [
     }
   },
   {
+    // Первая таблица выгрузки Isracard: покупки, которые ещё не проведены.
+    // Столбцов вчетверо меньше, чем у проведённых, и номера ваучера нет —
+    // поэтому и опознаётся отдельно. Идёт следом за основным форматом:
+    // у проведённой таблицы графа «מס' שובר» есть, и она разбирается им
+    source: 'Isracard',
+    pending: true,
+    marker: ['תאריך רכישה'],
+    columns: {
+      date: ['תאריך רכישה'],
+      merchant: ['שם בית עסק'],
+      amount: ['סכום חיוב', 'סכום עסקה'],
+      currency: ['מטבע חיוב', 'מטבע עסקה'],
+      originalAmount: ['סכום עסקה'],
+      originalCurrency: ['מטבע עסקה'],
+      note: ['פירוט נוסף']
+    }
+  },
+  {
     source: 'Max',
     marker: ['4 ספרות אחרונות'],
     columns: {
@@ -98,6 +116,52 @@ var STATEMENT_FORMATS_ = [
 ];
 
 /**
+ * Пробует прочитать одну строку как строку заголовков.
+ * Возвращает {format, index: {поле: номер столбца}} или null.
+ */
+function matchHeaderRow_(row) {
+  var cells = (row || []).map(function (cell) {
+    // Переносы строк внутри ячейки заголовка — обычное дело у Cal
+    return String(cell == null ? '' : cell).replace(/\s+/g, ' ').trim();
+  });
+  if (!cells.join('')) return null;
+
+  for (var f = 0; f < STATEMENT_FORMATS_.length; f++) {
+    var format = STATEMENT_FORMATS_[f];
+    var hasAll = format.marker.every(function (marker) {
+      return cells.some(function (cell) { return cell.indexOf(marker) !== -1; });
+    });
+    if (!hasAll) continue;
+
+    var index = {};
+    Object.keys(format.columns).forEach(function (field) {
+      var variants = format.columns[field];
+
+      // Сначала ищем точное совпадение названия: у Bit рядом стоят «סכום»
+      // (сумма) и «סכום עמלה» (комиссия), и поиск по вхождению отдал бы
+      // сумме графу комиссии — то есть ноль вместо денег
+      for (var v = 0; v < variants.length && index[field] === undefined; v++) {
+        for (var c = 0; c < cells.length; c++) {
+          if (cells[c] === variants[v]) { index[field] = c; break; }
+        }
+      }
+
+      if (index[field] !== undefined) return;
+      for (var c2 = 0; c2 < cells.length; c2++) {
+        for (var v2 = 0; v2 < variants.length; v2++) {
+          if (cells[c2] && cells[c2].indexOf(variants[v2]) !== -1 && index[field] === undefined) {
+            index[field] = c2;
+          }
+        }
+      }
+    });
+
+    return { format: format, index: index };
+  }
+  return null;
+}
+
+/**
  * Ищет строку заголовков и определяет источник.
  * Возвращает {source, headerRow, index: {поле: номер столбца}} или null.
  */
@@ -105,46 +169,36 @@ function detectStatementFormat_(rows) {
   var limit = Math.min(rows.length, 30); // шапка ни у кого не длиннее
 
   for (var r = 0; r < limit; r++) {
-    var cells = (rows[r] || []).map(function (cell) {
-      // Переносы строк внутри ячейки заголовка — обычное дело у Cal
-      return String(cell == null ? '' : cell).replace(/\s+/g, ' ').trim();
-    });
-    if (!cells.join('')) continue;
-
-    for (var f = 0; f < STATEMENT_FORMATS_.length; f++) {
-      var format = STATEMENT_FORMATS_[f];
-      var hasAll = format.marker.every(function (marker) {
-        return cells.some(function (cell) { return cell.indexOf(marker) !== -1; });
-      });
-      if (!hasAll) continue;
-
-      var index = {};
-      Object.keys(format.columns).forEach(function (field) {
-        var variants = format.columns[field];
-
-        // Сначала ищем точное совпадение названия: у Bit рядом стоят «סכום»
-        // (сумма) и «סכום עמלה» (комиссия), и поиск по вхождению отдал бы
-        // сумме графу комиссии — то есть ноль вместо денег
-        for (var v = 0; v < variants.length && index[field] === undefined; v++) {
-          for (var c = 0; c < cells.length; c++) {
-            if (cells[c] === variants[v]) { index[field] = c; break; }
-          }
-        }
-
-        if (index[field] !== undefined) return;
-        for (var c2 = 0; c2 < cells.length; c2++) {
-          for (var v2 = 0; v2 < variants.length; v2++) {
-            if (cells[c2] && cells[c2].indexOf(variants[v2]) !== -1 && index[field] === undefined) {
-              index[field] = c2;
-            }
-          }
-        }
-      });
-
-      return { source: format.source, headerRow: r, index: index };
-    }
+    var match = matchHeaderRow_(rows[r]);
+    if (match) return { source: match.format.source, headerRow: r, index: match.index, format: match.format };
   }
   return null;
+}
+
+/**
+ * Все блоки листа: у Isracard выгрузка состоит из двух таблиц со своими
+ * заголовками — сначала «עסקאות שטרם נקלטו» (покупка сделана, но карточная
+ * компания ещё не выставила её к оплате), следом проведённые операции с
+ * номерами ваучеров. Разбор по первому найденному заголовку читал только
+ * вторую таблицу, и покупки последних дней — 30.08.2026 это было 1 522 ₪
+ * по одной карте — молча терялись: в банке они уже помечены «списание по
+ * карте, не трата», так что не всплывали нигде.
+ */
+function statementBlocks_(rows) {
+  var blocks = [];
+
+  for (var r = 0; r < rows.length; r++) {
+    var match = matchHeaderRow_(rows[r]);
+    if (!match) continue;
+    blocks.push({ format: match.format, headerRow: r, index: match.index });
+  }
+
+  // Границей блока служит заголовок следующего
+  blocks.forEach(function (block, i) {
+    block.lastRow = i + 1 < blocks.length ? blocks[i + 1].headerRow - 1 : rows.length - 1;
+  });
+
+  return blocks;
 }
 
 /**
@@ -186,6 +240,38 @@ function isracardHeaderHints_(rows, headerRow) {
     if (card && !hints.card && !/^(19|20)\d\d$/.test(card[1])) hints.card = card[1];
     var charge = line.match(/לחיוב\s*ב-?\s*(\d{1,2})[.\/](\d{1,2})/);
     if (charge && !hints.chargeDay) hints.chargeDay = charge[1] + '.' + charge[2];
+  }
+  return hints;
+}
+
+/**
+ * Шапка Max: «6528-max» и месяц счёта «09/2026». Дня списания в выгрузке
+ * нет ни в шапке, ни в строках — берём его из реестра карт. Без даты
+ * списания платёж по рассрочке не к чему привязать: в самой строке стоит
+ * день покупки, у автокредита это 04.03.2024.
+ */
+function maxHeaderHints_(rows, headerRow, cards) {
+  var hints = { card: '', chargeDay: '', chargeDate: null };
+  var month = 0;
+  var year = 0;
+
+  for (var r = 0; r < headerRow; r++) {
+    var line = (rows[r] || []).map(function (c) { return String(c == null ? '' : c); }).join(' ');
+
+    // «6528-max», «2913-Dream Card VIP»: четыре цифры и следом название.
+    // Требуем букву после дефиса, иначе сюда же попадёт «09/2026»
+    var card = line.match(/(\d{4})\s*-\s*[^\d\s]/);
+    if (card && !hints.card) hints.card = card[1];
+
+    var period = line.match(/(^|\s)(0?[1-9]|1[0-2])\/(20\d\d)(\s|$)/);
+    if (period && !month) { month = Number(period[2]); year = Number(period[3]); }
+  }
+
+  var known = cards ? cards[hints.card] : null;
+  var day = known ? Number(String(known.chargeDay).replace(/\D/g, '')) : 0;
+  if (month && year && day) {
+    hints.chargeDay = day + '.' + month;
+    hints.chargeDate = new Date(year, month - 1, day);
   }
   return hints;
 }
@@ -300,21 +386,37 @@ function readCards_() {
  * чтобы разбор можно было проверить тестом без таблицы.
  */
 function parseStatement_(rows, fileName, sheetName) {
-  var format = detectStatementFormat_(rows);
-  if (!format) return { ok: false, error: 'Не понял, чья это выписка: не нашёл знакомых столбцов' };
+  var blocks = statementBlocks_(rows);
+  if (!blocks.length) return { ok: false, error: 'Не понял, чья это выписка: не нашёл знакомых столбцов' };
 
   var cards = readCards_();
+  var operations = [];
+
+  for (var b = 0; b < blocks.length; b++) {
+    var parsed = parseStatementBlock_(rows, blocks[b], fileName, sheetName, cards);
+    operations = operations.concat(parsed);
+  }
+
+  return { ok: true, source: blocks[0].format.source, operations: operations };
+}
+
+/**
+ * Разбор одной таблицы внутри листа: от её заголовка до заголовка следующей.
+ */
+function parseStatementBlock_(rows, block, fileName, sheetName, cards) {
+  var format = block.format;
   var knownCards = Object.keys(cards);
 
   // Cal растягивает заголовок файла на все колонки, и в каждой строке данных
   // он снова оказывается в графе «примечание». В заметке к покупке такому
   // тексту не место — отличаем его по совпадению с шапкой
-  var headerText = rows.slice(0, format.headerRow)
+  var headerText = rows.slice(0, block.headerRow)
     .map(function (row) { return (row || []).join(' '); }).join(' ');
-  var index = format.index;
+  var index = block.index;
   var hints = { card: '', chargeDay: '', chargeDate: null };
-  if (format.source === 'Isracard') hints = isracardHeaderHints_(rows, format.headerRow);
-  if (format.source === 'Cal') hints = calHeaderHints_(rows, format.headerRow, fileName);
+  if (format.source === 'Isracard') hints = isracardHeaderHints_(rows, block.headerRow);
+  if (format.source === 'Cal') hints = calHeaderHints_(rows, block.headerRow, fileName);
+  if (format.source === 'Max') hints = maxHeaderHints_(rows, block.headerRow, cards);
   var operations = [];
 
   function cell(row, field) {
@@ -322,16 +424,17 @@ function parseStatement_(rows, fileName, sheetName) {
     return position === undefined ? '' : row[position];
   }
 
-  for (var r = format.headerRow + 1; r < rows.length; r++) {
+  for (var r = block.headerRow + 1; r <= block.lastRow; r++) {
     var row = rows[r] || [];
     var date = parseStatementDate_(cell(row, 'date'));
     if (!date) continue; // итоговые строки и разделители дат не имеют
 
     // Max делит операции по листам: «к дате списания», «одобрены, но ещё не
     // проведены» (покупки последних дней) и «к сведению» (будущие платежи,
-    // которые ещё не случились)
+    // которые ещё не случились). Isracard делит тем же смыслом, но внутри
+    // одного листа — отдельной таблицей, у неё свой формат с признаком
     var sheet = String(sheetName || '');
-    var pending = /טרם נקלטו|שאושרו/.test(sheet);
+    var pending = /טרם נקלטו|שאושרו/.test(sheet) || !!format.pending;
     var informational = /לידיעה/.test(sheet);
 
     var operation = {
@@ -453,6 +556,12 @@ function parseStatement_(rows, fileName, sheetName) {
         }
         if (!operation.chargeDate && hints.chargeDay) {
           operation.chargeDate = parseStatementDate_(hints.chargeDay + '.' + date.getFullYear());
+          // В шапке только «15.09», без года. У рассрочки покупка может быть
+          // и двухлетней давности — тогда год покупки даёт дату списания,
+          // прошедшую раньше самой покупки. Двигаем вперёд, пока не сойдётся
+          while (operation.chargeDate && operation.chargeDate < date) {
+            operation.chargeDate.setFullYear(operation.chargeDate.getFullYear() + 1);
+          }
         }
       } else {
         var prefix = format.source === 'Max' ? 'max:' : 'cal:';
@@ -464,8 +573,24 @@ function parseStatement_(rows, fileName, sheetName) {
           (operation.note ? ':' + operation.note : '') +
           // Строка «к сведению» — про другое событие, чем покупка с той же
           // датой и суммой, и путать их ключом нельзя
-          (informational ? ':лидиеа' : '');
+          (informational ? ':лидиеа' : '') +
+          // А у автокредита примечания нет вовсе: платежи всех шестидесяти
+          // месяцев отличаются друг от друга только датой списания
+          (operation.kind === 'рассрочка' && operation.chargeDate
+            ? ':' + formatDate_(operation.chargeDate) : '');
       }
+    }
+
+    // Рассрочку выписка датирует днём покупки — у автокредита это март
+    // 2024 года. По такой дате платёж этого месяца и в отчёт попадал бы
+    // позапрошлым годом, и фильтр «Учёт с» отбрасывал его целиком: мимо
+    // бюджета шли и Kia, и секция ребёнка, вместе около 2 400 ₪ в месяц.
+    // Считаем платёж днём списания, а день покупки уносим в примечание
+    if (operation.kind === 'рассрочка' && operation.chargeDate &&
+        operation.chargeDate > operation.date) {
+      operation.note = ['покупка ' + formatDate_(operation.date), operation.note]
+        .filter(function (part) { return part; }).join(' · ');
+      operation.date = operation.chargeDate;
     }
 
     var known = cards[operation.card];
@@ -483,7 +608,7 @@ function parseStatement_(rows, fileName, sheetName) {
     operations.push(operation);
   }
 
-  return { ok: true, source: format.source, operations: operations };
+  return operations;
 }
 
 /**
@@ -501,6 +626,25 @@ function accountingStartDate_() {
 }
 
 /**
+ * Как узнать ту же покупку, когда она вернётся уже проведённой: источник,
+ * карта, день, сумма и магазин. Ключ выписки для этого не годится — он-то
+ * как раз и меняется, когда операция перестаёт быть «в обработке».
+ */
+function waitingKey_(source, card, date, amount, merchant) {
+  var day = Object.prototype.toString.call(date) === '[object Date]'
+    ? formatDate_(date)
+    : String(date == null ? '' : date).trim();
+  var sum = Number(amount) || 0;
+  return [
+    String(source || '').trim(),
+    String(card == null ? '' : card).replace(/\D/g, ''),
+    day,
+    sum.toFixed(2),
+    String(merchant || '').replace(/\s+/g, ' ').trim()
+  ].join('|');
+}
+
+/**
  * Пишет операции в лист, пропуская уже импортированные.
  */
 function saveOperations_(operations, fileName, fileKey) {
@@ -508,20 +652,44 @@ function saveOperations_(operations, fileName, fileKey) {
   var last = sheet.getLastRow();
 
   var seen = {};
+  // Строки, которые ждут списания: та же покупка вернётся в следующей
+  // выгрузке уже проведённой — с номером ваучера у Isracard, без пометки
+  // «בקליטה» у Cal. Ключ у неё будет другой, и без этого списка покупка
+  // легла бы в таблицу второй раз
+  var waiting = {};
   if (last >= 2) {
-    sheet.getRange(2, 16, last - 1, 1).getValues().forEach(function (row) {
-      if (row[0]) seen[String(row[0])] = true;
+    var stored = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+    stored.forEach(function (row, i) {
+      if (row[15]) seen[String(row[15])] = true;
+      if (String(row[13]) === 'ждёт списания') {
+        waiting[waitingKey_(row[7], row[8], row[0], row[2], row[10])] = 2 + i;
+      }
     });
   }
 
   var startDate = accountingStartDate_();
   var rows = [];
-  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0 };
+  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0, replaced: 0 };
 
   operations.forEach(function (op) {
     if (startDate && op.date < startDate) { stats.skipped++; return; }
     if (seen[op.key]) { stats.dupes++; return; }
     seen[op.key] = true;
+
+    // Пришла проведённой та покупка, что в прошлый раз только ждала:
+    // дописываем в её строку ключ и вид, ничего не задваивая. Категорию,
+    // склейку с чеком и ID не трогаем — они могли быть проставлены руками
+    if (op.kind !== 'ждёт списания') {
+      var slot = waiting[waitingKey_(op.source, op.card, op.date, op.amount, op.merchant)];
+      if (slot) {
+        sheet.getRange(slot, 2).setValue(op.chargeDate || '');
+        sheet.getRange(slot, 14).setValue(op.kind);
+        sheet.getRange(slot, 16).setValue(op.key);
+        sheet.getRange(slot, 18).setValue(op.file || fileName || '');
+        stats.replaced++;
+        return;
+      }
+    }
 
     rows.push([
       op.date,
@@ -648,6 +816,7 @@ function importReportText_(fileName, result) {
     'Записано новых: <b>' + s.added + '</b>'
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
+  if (s.replaced) lines.push('Дождались списания: ' + s.replaced);
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
 
   // Без категории трата попадёт в отчёт безымянной строкой — лучше сказать

@@ -147,6 +147,16 @@ check('месячный отчёт строится', report && report.text.leng
   report ? String(report.groups.length) : 'пусто');
 check('в отчёте есть полоски категорий', /▇/.test(report.text));
 
+// Недельный отчёт смотрит на семь дней назад от сегодня, поэтому запись для
+// него делаем сегодняшним числом. С датами августа 2026 тест держался ровно
+// неделю после написания, а потом падал сам по себе — на пустой неделе
+// «В среднем в день» бот не пишет вовсе
+call('appendExpense_', {
+  date: new Date(), amount: 90, currency: 'ILS',
+  category: 'Продукты', subcategory: '', description: 'хлеб и молоко',
+  author: 'Толя', sourceType: 'текст', rawText: '90 продукты'
+});
+
 const week = call('reportWeek_');
 check('недельный отчёт строится', week && week.text.length > 0, week ? 'ок' : 'пусто');
 check('в неделе виден средний расход в день', /В среднем в день/.test(week.text));
