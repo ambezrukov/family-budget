@@ -142,20 +142,20 @@ check('разобранные магазины больше не в очеред
 
 console.log('\n=== Отчёт за месяц ===');
 
-const report = call('reportCurrentMonth_');
-check('месячный отчёт строится', report && report.text.length > 0 && report.groups.length > 0,
-  report ? String(report.groups.length) : 'пусто');
-check('в отчёте есть полоски категорий', /▇/.test(report.text));
-
-// Недельный отчёт смотрит на семь дней назад от сегодня, поэтому запись для
-// него делаем сегодняшним числом. С датами августа 2026 тест держался ровно
-// неделю после написания, а потом падал сам по себе — на пустой неделе
-// «В среднем в день» бот не пишет вовсе
+// Отчёты смотрят от сегодняшнего дня, поэтому запись для них делаем
+// сегодняшним числом. С датами августа 2026 тесты держались ровно до конца
+// августа, а потом падали сами по себе: в сентябре у бота нет ни записей
+// месяца, ни недели — «В среднем в день» он на пустом месте не пишет
 call('appendExpense_', {
   date: new Date(), amount: 90, currency: 'ILS',
   category: 'Продукты', subcategory: '', description: 'хлеб и молоко',
   author: 'Толя', sourceType: 'текст', rawText: '90 продукты'
 });
+
+const report = call('reportCurrentMonth_');
+check('месячный отчёт строится', report && report.text.length > 0 && report.groups.length > 0,
+  report ? String(report.groups.length) : 'пусто');
+check('в отчёте есть полоски категорий', /▇/.test(report.text));
 
 const week = call('reportWeek_');
 check('недельный отчёт строится', week && week.text.length > 0, week ? 'ок' : 'пусто');

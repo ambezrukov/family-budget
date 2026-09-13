@@ -657,5 +657,122 @@ check('строка про электричество осталась одна'
 check('её вид сменился на покупку', settledRows.length === 1 && settledRows[0][13] === 'покупка',
   settledRows.length === 1 ? settledRows[0][13] : '');
 
+
+console.log('\n=== Магазин в проведённой строке назван иначе ===');
+
+// Так и было 13.09.2026: непроведённая покупка звалась «Carrefour רמת אלון
+// חיפה», проведённая — «CARREFOUR רמת אלון ח». Сопоставление требовало
+// точного совпадения названия, и девять покупок на 1 888 ₪ легли дважды
+call('updateSetting_', 'Учёт с', '');
+const renamedPending = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['עסקאות שטרם נקלטו', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', '', '', '', ''],
+  ['30.08.26', 'Carrefour רמת אלון חיפה', '154.47', '₪', '', '', '', '']
+];
+const renamedSettled = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', 'סכום חיוב', 'מטבע חיוב', "מס' שובר", 'פירוט נוסף'],
+  ['30.08.26', 'CARREFOUR רמת אלון ח', '154.47', '₪', '154.47', '₪', '028442827', '']
+];
+
+call('importStatementRows_', renamedPending, 'кар-ожидание.xlsx', 'ключ-кар-1');
+const renamedResult = call('importStatementRows_', renamedSettled, 'кар-проведено.xlsx', 'ключ-кар-2');
+check('обрезанное название не завело вторую строку', renamedResult.stats.added === 0,
+  JSON.stringify(renamedResult.stats));
+check('ожидание закрыто', renamedResult.stats.replaced === 1, JSON.stringify(renamedResult.stats));
+const carrefour = call('ensureSheet_', 'Операции', []).getDataRange().getValues()
+  .filter(row => Math.abs(Number(row[2]) - 154.47) < 0.005);
+check('покупка в таблице одна', carrefour.length === 1, String(carrefour.length));
+check('её вид — покупка', carrefour.length === 1 && carrefour[0][13] === 'покупка',
+  carrefour.length === 1 ? carrefour[0][13] : '');
+
+console.log('\n=== Две покупки одного дня на одну сумму ===');
+
+// По одной карте случается две поездки «רב-פס» по 8 ₪ в день. Обе ждут
+// списания, и обе должны закрыться — а не закрыть одну и ту же строку
+const twinsPending = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['עסקאות שטרם נקלטו', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', '', '', '', ''],
+  ['08.09.26', 'מ.תחבורה רב-פס', '8', '₪', '', '', '', ''],
+  ['08.09.26', 'מ.תחבורה רב-פס', '8', '₪', '', '', '', '']
+];
+const twinsSettled = [
+  ['פירוט עסקאות', 'ספטמבר 2026', '', '', '', '', '', ''],
+  ['MC דירקט - 9189', '', '', '', '', '', '', ''],
+  ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'מטבע עסקה', 'סכום חיוב', 'מטבע חיוב', "מס' שובר", 'פירוט נוסף'],
+  ['08.09.26', 'מ.תחבורה רב-פס', '8', '₪', '8', '₪', '085761031', ''],
+  ['08.09.26', 'מ.תחבורה רב-פס', '8', '₪', '8', '₪', '085761032', '']
+];
+
+call('importStatementRows_', twinsPending, 'близнецы-ожидание.xlsx', 'ключ-близнецы-1');
+const twinsResult = call('importStatementRows_', twinsSettled, 'близнецы-проведено.xlsx', 'ключ-близнецы-2');
+check('обе поездки попали в таблицу',
+  twinsResult.stats.replaced + twinsResult.stats.added === 2,
+  JSON.stringify(twinsResult.stats));
+const twins = call('ensureSheet_', 'Операции', []).getDataRange().getValues()
+  .filter(row => String(row[10]).indexOf('רב-פס') !== -1);
+check('строк по-прежнему две', twins.length === 2, String(twins.length));
+check('ни одна не осталась в ожидании',
+  twins.every(row => row[13] === 'покупка'), twins.map(row => row[13]).join(','));
+
+console.log('\n=== Max уточнил сумму платежа по рассрочке ===');
+
+// Проценты по автокредиту Max пересчитывает между выгрузками: 403.18 ₪ в
+// августовской, 396.46 ₪ в сентябрьской. Это один платёж, а не два
+const kiaHeader = ['תאריך עסקה', 'שם בית העסק', 'קטגוריה', '4 ספרות אחרונות של כרטיס האשראי',
+  'סוג עסקה', 'סכום חיוב', 'מטבע חיוב', 'סכום עסקה מקורי', 'מטבע עסקה מקורי', 'תאריך חיוב', 'הערות'];
+const kiaAugust = [
+  ['כל המשתמשים', '', '', '', '', '', '', '', '', '', ''],
+  ['6528-max', '', '', '', '', '', '', '', '', '', ''],
+  kiaHeader,
+  ['04-03-2024', 'קיה', 'מוצרי אשראי', '6528', 'מימון לרכישה עתידית', '403.18', '₪', '81758', '₪', '15-09-2026', '']
+];
+const kiaSeptember = [
+  ['כל המשתמשים', '', '', '', '', '', '', '', '', '', ''],
+  ['6528-max', '', '', '', '', '', '', '', '', '', ''],
+  kiaHeader,
+  ['04-03-2024', 'קיה', 'מוצרי אשראי', '6528', 'מימון לרכישה עתידית', '396.46', '₪', '81758', '₪', '15-09-2026', 'null']
+];
+
+call('importStatementRows_', kiaAugust, 'max-август.xlsx', 'ключ-киа-1');
+const kiaResult = call('importStatementRows_', kiaSeptember, 'max-сентябрь.xlsx', 'ключ-киа-2');
+check('новой строки платёж не завёл', kiaResult.stats.added === 0, JSON.stringify(kiaResult.stats));
+check('сумма уточнена', kiaResult.stats.updated === 1, JSON.stringify(kiaResult.stats));
+const kiaRows = call('ensureSheet_', 'Операции', []).getDataRange().getValues()
+  .filter(row => String(row[10]) === 'קיה' && String(row[17]).indexOf('max-') === 0);
+check('платёж в таблице один', kiaRows.length === 1, String(kiaRows.length));
+check('сумма стала свежей', kiaRows.length === 1 && Math.abs(Number(kiaRows[0][2]) - 396.46) < 0.005,
+  kiaRows.length === 1 ? String(kiaRows[0][2]) : '');
+check('«null» в примечание не попал', kiaRows.length === 1 && !/null/i.test(String(kiaRows[0][18])),
+  kiaRows.length === 1 ? String(kiaRows[0][18]) : '');
+
+console.log('\n=== Разбор уже задвоенных строк ===');
+
+// Строки, записанные до починки: ожидающая и проведённая живут рядом
+const repairSheet = call("ensureSheet_", "Операции", []);
+const beforeRepair = repairSheet.getLastRow();
+repairSheet.appendRow([new Date(2026, 7, 27), '', 937.72, 'ILS', 937.72, '', '', 'Isracard', '9189',
+  'Анатолий', 'חברת החשמל לישראל בע"מ', '', '', 'ждёт списания', '', 'isracard:9189:27.08.2026:x',
+  '', 'старый.xlsx', '', 'id-1']);
+repairSheet.appendRow([new Date(2026, 7, 27), new Date(2026, 8, 1), 937.72, 'ILS', 937.72, '', '', 'Isracard',
+  '9189', 'Анатолий', 'חברת החשמל לישר', '', '', 'покупка', '', 'isracard:030431135',
+  '', 'новый.xlsx', '', 'id-2']);
+
+const repair = call('repairOperations');
+check('дубль найден и убран', repair.removed === 1, JSON.stringify(repair));
+check('убрана именно лишняя сумма', Math.abs(repair.amount - 937.72) < 0.005, String(repair.amount));
+check('строк стало на одну больше исходного', repairSheet.getLastRow() === beforeRepair + 1,
+  beforeRepair + ' → ' + repairSheet.getLastRow());
+const powerRows = repairSheet.getDataRange().getValues()
+  .filter(row => String(row[17]) === 'старый.xlsx' || String(row[17]) === 'новый.xlsx');
+check('осталась проведённая строка',
+  powerRows.length === 1 && powerRows[0][13] === 'покупка',
+  powerRows.map(row => row[13]).join(','));
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

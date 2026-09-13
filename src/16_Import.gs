@@ -308,6 +308,10 @@ function parseStatementDate_(value) {
 function statementNote_(value, headerText) {
   var note = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   if (!note) return '';
+  // Max отдаёт пустое примечание то пустой ячейкой, то текстом «null».
+  // В таблице из-за этого появлялось «покупка 04.03.2024 · null», а платёж
+  // по рассрочке переставал узнаваться при следующей выгрузке
+  if (/^null$/i.test(note)) return '';
   if (headerText && headerText.replace(/\s+/g, ' ').indexOf(note) !== -1) return '';
   return note;
 }
@@ -627,10 +631,17 @@ function accountingStartDate_() {
 
 /**
  * Как узнать ту же покупку, когда она вернётся уже проведённой: источник,
- * карта, день, сумма и магазин. Ключ выписки для этого не годится — он-то
- * как раз и меняется, когда операция перестаёт быть «в обработке».
+ * карта, день и сумма. Ключ выписки для этого не годится — он-то как раз и
+ * меняется, когда операция перестаёт быть «в обработке».
+ *
+ * Названия магазина в ключе намеренно нет. Карточные компании пишут его в
+ * непроведённой и проведённой строке по-разному: «Carrefour רמת אלון חיפה»
+ * против «CARREFOUR רמת אלון ח», «גרנד BB» против «אלקליל קוסמטיקס». На
+ * выписках за август так задвоилось девять покупок на 1 888 ₪. Магазин
+ * участвует мягко — он выбирает строку, когда на один ключ их несколько
+ * (см. takeWaitingSlot_).
  */
-function waitingKey_(source, card, date, amount, merchant) {
+function waitingKey_(source, card, date, amount) {
   var day = Object.prototype.toString.call(date) === '[object Date]'
     ? formatDate_(date)
     : String(date == null ? '' : date).trim();
@@ -639,8 +650,55 @@ function waitingKey_(source, card, date, amount, merchant) {
     String(source || '').trim(),
     String(card == null ? '' : card).replace(/\D/g, ''),
     day,
-    sum.toFixed(2),
-    String(merchant || '').replace(/\s+/g, ' ').trim()
+    sum.toFixed(2)
+  ].join('|');
+}
+
+/**
+ * Похожи ли названия магазина: регистр и лишние пробелы не в счёт, обрезка
+ * названия — тоже («CARREFOUR רמת אלון ח» ← «Carrefour רמת אלון חיפה»).
+ */
+function merchantAlike_(a, b) {
+  var x = String(a == null ? '' : a).replace(/\s+/g, ' ').trim().toLowerCase();
+  var y = String(b == null ? '' : b).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!x || !y) return false;
+  return x.indexOf(y) === 0 || y.indexOf(x) === 0;
+}
+
+/**
+ * Забирает строку, которая ждала эту покупку: сначала ту, где название
+ * магазина похоже, иначе первую попавшуюся с тем же днём и суммой.
+ *
+ * Забранная строка из списка уходит: по карте 9189 случается две поездки
+ * «רב-פס» по 8 ₪ в один день, и обе проведённые строки закрывали бы одну и
+ * ту же ожидающую — вторая покупка потерялась бы.
+ */
+function takeWaitingSlot_(waiting, op) {
+  var list = waiting[waitingKey_(op.source, op.card, op.date, op.amount)];
+  if (!list || !list.length) return 0;
+  for (var i = 0; i < list.length; i++) {
+    if (merchantAlike_(list[i].merchant, op.merchant)) return list.splice(i, 1)[0].row;
+  }
+  return list.shift().row;
+}
+
+/**
+ * Ключ платежа по рассрочке. Суммы в нём нет: Max пересчитывает проценты по
+ * автокредиту от выгрузки к выгрузке — 403.18 ₪ в августовской и 396.46 ₪ в
+ * сентябрьской, — и по ключу операции такой платёж выглядел новым. Два
+ * платежа одного дня (ежемесячный и финансирование остатка) различает
+ * примечание: «покупка 04.03.2024 · תשלום 30 מתוך 60» и «покупка 04.03.2024».
+ */
+function installmentKey_(source, card, date, merchant, note) {
+  var day = Object.prototype.toString.call(date) === '[object Date]'
+    ? formatDate_(date)
+    : String(date == null ? '' : date).trim();
+  return [
+    String(source || '').trim(),
+    String(card == null ? '' : card).replace(/\D/g, ''),
+    day,
+    String(merchant == null ? '' : merchant).replace(/\s+/g, ' ').trim(),
+    String(note == null ? '' : note).replace(/\s+/g, ' ').trim()
   ].join('|');
 }
 
@@ -657,39 +715,84 @@ function saveOperations_(operations, fileName, fileKey) {
   // «בקליטה» у Cal. Ключ у неё будет другой, и без этого списка покупка
   // легла бы в таблицу второй раз
   var waiting = {};
+  // Платежи по рассрочке: у них сумма от выгрузки к выгрузке уточняется
+  var installments = {};
+  var kinds = {};
   if (last >= 2) {
     var stored = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
     stored.forEach(function (row, i) {
-      if (row[15]) seen[String(row[15])] = true;
-      if (String(row[13]) === 'ждёт списания') {
-        waiting[waitingKey_(row[7], row[8], row[0], row[2], row[10])] = 2 + i;
+      var line = 2 + i;
+      var kind = String(row[13]);
+      kinds[line] = kind;
+      if (row[15]) seen[String(row[15])] = line;
+      if (kind === 'ждёт списания') {
+        var key = waitingKey_(row[7], row[8], row[0], row[2]);
+        if (!waiting[key]) waiting[key] = [];
+        waiting[key].push({ row: line, merchant: row[10] });
+      }
+      if (kind === 'рассрочка') {
+        installments[installmentKey_(row[7], row[8], row[0], row[10], row[18])] = line;
       }
     });
   }
 
   var startDate = accountingStartDate_();
   var rows = [];
-  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0, replaced: 0 };
+  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0, replaced: 0, updated: 0 };
 
   operations.forEach(function (op) {
     if (startDate && op.date < startDate) { stats.skipped++; return; }
-    if (seen[op.key]) { stats.dupes++; return; }
-    seen[op.key] = true;
 
     // Пришла проведённой та покупка, что в прошлый раз только ждала:
     // дописываем в её строку ключ и вид, ничего не задваивая. Категорию,
-    // склейку с чеком и ID не трогаем — они могли быть проставлены руками
+    // склейку с чеком и ID не трогаем — они могли быть проставлены руками.
+    // Ожидание проверяется раньше ключа: у Max ключ непроведённой строки
+    // совпадает с проведённой, и покупка навсегда оставалась «ждёт списания»
     if (op.kind !== 'ждёт списания') {
-      var slot = waiting[waitingKey_(op.source, op.card, op.date, op.amount, op.merchant)];
+      var slot = takeWaitingSlot_(waiting, op);
       if (slot) {
         sheet.getRange(slot, 2).setValue(op.chargeDate || '');
         sheet.getRange(slot, 14).setValue(op.kind);
         sheet.getRange(slot, 16).setValue(op.key);
         sheet.getRange(slot, 18).setValue(op.file || fileName || '');
+        kinds[slot] = op.kind;
+        seen[op.key] = slot;
         stats.replaced++;
         return;
       }
     }
+
+    var known = seen[op.key];
+    if (known !== undefined) {
+      // Та же строка уже в таблице — но если она числилась ожидающей, а
+      // выписка отдала её проведённой, вид надо поправить: ключ у обеих
+      // один, и сама собой такая строка не закроется
+      if (op.kind !== 'ждёт списания' && known && kinds[known] === 'ждёт списания') {
+        sheet.getRange(known, 2).setValue(op.chargeDate || '');
+        sheet.getRange(known, 14).setValue(op.kind);
+        kinds[known] = op.kind;
+        stats.replaced++;
+        return;
+      }
+      stats.dupes++;
+      return;
+    }
+
+    // Платёж по рассрочке с уточнённой суммой: тот же платёж, а не новый
+    if (op.kind === 'рассрочка') {
+      var line = installments[installmentKey_(op.source, op.card, op.date, op.merchant, op.note)];
+      if (line) {
+        sheet.getRange(line, 3).setValue(op.amount);
+        sheet.getRange(line, 5).setValue(toBaseAmount_(op.amount, op.currency));
+        sheet.getRange(line, 16).setValue(op.key);
+        sheet.getRange(line, 18).setValue(op.file || fileName || '');
+        seen[op.key] = line;
+        stats.updated++;
+        return;
+      }
+    }
+
+    seen[op.key] = 0;
 
     rows.push([
       op.date,
@@ -817,6 +920,7 @@ function importReportText_(fileName, result) {
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
   if (s.replaced) lines.push('Дождались списания: ' + s.replaced);
+  if (s.updated) lines.push('Сумма уточнена: ' + s.updated);
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
 
   // Без категории трата попадёт в отчёт безымянной строкой — лучше сказать

@@ -173,6 +173,11 @@ function handleCommand_(message, text) {
     case '/importt':
       importFromFolder_(chatId);
       return;
+    case '/remont':
+    case '/repair':
+      tgSend_(chatId, 'Смотрю, не задвоились ли операции…');
+      repairOperations(chatId);
+      return;
     case '/spravochnik':
       handleDirectoryUpload_(message, text);
       return;

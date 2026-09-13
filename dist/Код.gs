@@ -30,6 +30,7 @@
  *   22_Budget
  *   23_Categorize
  *   24_Charts
+ *   25_Repair
  */
 
 // ===========================================================================
@@ -54,7 +55,7 @@
  *
  * Поднимать при каждой заметной правке, вместе с записью в CHANGELOG.md.
  */
-var BOT_VERSION = '1.20.1';
+var BOT_VERSION = '1.21.0';
 
 // Откуда берутся обновления. Свой форк подставляется свойством скрипта
 // UPDATE_SOURCE — тогда бот следит за ним, а не за исходным проектом.
@@ -3637,6 +3638,11 @@ function handleCommand_(message, text) {
     case '/import':
     case '/importt':
       importFromFolder_(chatId);
+      return;
+    case '/remont':
+    case '/repair':
+      tgSend_(chatId, 'Смотрю, не задвоились ли операции…');
+      repairOperations(chatId);
       return;
     case '/spravochnik':
       handleDirectoryUpload_(message, text);
@@ -8173,11 +8179,14 @@ function weeklyUpdateCheck() {
  * прежнюю версию, а сети может не быть вовсе.
  */
 
-var BOT_VERSION_DATE = "30.08.2026";
+var BOT_VERSION_DATE = "13.09.2026";
 
 var BOT_CHANGES = [
-  "Список записей в мини-приложении больше не растягивает страницу: на виду пять последних, остальные — под строкой «Ещё столько-то записей»",
-  "Блок «Кто сколько потратил» убран"
+  "Покупка, ждущая списания, больше не задваивается, когда карточная компания пишет магазин иначе, чем при проведении («Carrefour רמת אלון חיפה» в ожидании и «CARREFOUR רמת אלון ח» после). Сходятся теперь по карте, дню и сумме, а название лишь выбирает строку, когда их несколько. На выписках за август так задвоилось девять покупок на 1 888 ₪",
+  "Ожидание проверяется раньше ключа операции: у Max ключ непроведённой строки совпадает с проведённой, и покупки вроде «רמי לוי 1 151 ₪» навсегда оставались в таблице со словами «ждёт списания»",
+  "Платёж по рассрочке с уточнённой суммой считается тем же платежом: Max пересчитывает проценты по автокредиту между выгрузками (403.18 ₪ в августовской, 396.46 ₪ в сентябрьской), и раньше выходило два платежа",
+  "Примечание «null», которое Max иногда пишет словом, в таблицу не попадает",
+  "Новая команда `/remont` — разбирает уже задвоенные строки: показывает, что удалила и на какую сумму, а строки, связанные с чеком, не трогает"
 ];
 
 
@@ -8495,6 +8504,10 @@ function parseStatementDate_(value) {
 function statementNote_(value, headerText) {
   var note = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   if (!note) return '';
+  // Max отдаёт пустое примечание то пустой ячейкой, то текстом «null».
+  // В таблице из-за этого появлялось «покупка 04.03.2024 · null», а платёж
+  // по рассрочке переставал узнаваться при следующей выгрузке
+  if (/^null$/i.test(note)) return '';
   if (headerText && headerText.replace(/\s+/g, ' ').indexOf(note) !== -1) return '';
   return note;
 }
@@ -8814,10 +8827,17 @@ function accountingStartDate_() {
 
 /**
  * Как узнать ту же покупку, когда она вернётся уже проведённой: источник,
- * карта, день, сумма и магазин. Ключ выписки для этого не годится — он-то
- * как раз и меняется, когда операция перестаёт быть «в обработке».
+ * карта, день и сумма. Ключ выписки для этого не годится — он-то как раз и
+ * меняется, когда операция перестаёт быть «в обработке».
+ *
+ * Названия магазина в ключе намеренно нет. Карточные компании пишут его в
+ * непроведённой и проведённой строке по-разному: «Carrefour רמת אלון חיפה»
+ * против «CARREFOUR רמת אלון ח», «גרנד BB» против «אלקליל קוסמטיקס». На
+ * выписках за август так задвоилось девять покупок на 1 888 ₪. Магазин
+ * участвует мягко — он выбирает строку, когда на один ключ их несколько
+ * (см. takeWaitingSlot_).
  */
-function waitingKey_(source, card, date, amount, merchant) {
+function waitingKey_(source, card, date, amount) {
   var day = Object.prototype.toString.call(date) === '[object Date]'
     ? formatDate_(date)
     : String(date == null ? '' : date).trim();
@@ -8826,8 +8846,55 @@ function waitingKey_(source, card, date, amount, merchant) {
     String(source || '').trim(),
     String(card == null ? '' : card).replace(/\D/g, ''),
     day,
-    sum.toFixed(2),
-    String(merchant || '').replace(/\s+/g, ' ').trim()
+    sum.toFixed(2)
+  ].join('|');
+}
+
+/**
+ * Похожи ли названия магазина: регистр и лишние пробелы не в счёт, обрезка
+ * названия — тоже («CARREFOUR רמת אלון ח» ← «Carrefour רמת אלון חיפה»).
+ */
+function merchantAlike_(a, b) {
+  var x = String(a == null ? '' : a).replace(/\s+/g, ' ').trim().toLowerCase();
+  var y = String(b == null ? '' : b).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!x || !y) return false;
+  return x.indexOf(y) === 0 || y.indexOf(x) === 0;
+}
+
+/**
+ * Забирает строку, которая ждала эту покупку: сначала ту, где название
+ * магазина похоже, иначе первую попавшуюся с тем же днём и суммой.
+ *
+ * Забранная строка из списка уходит: по карте 9189 случается две поездки
+ * «רב-פס» по 8 ₪ в один день, и обе проведённые строки закрывали бы одну и
+ * ту же ожидающую — вторая покупка потерялась бы.
+ */
+function takeWaitingSlot_(waiting, op) {
+  var list = waiting[waitingKey_(op.source, op.card, op.date, op.amount)];
+  if (!list || !list.length) return 0;
+  for (var i = 0; i < list.length; i++) {
+    if (merchantAlike_(list[i].merchant, op.merchant)) return list.splice(i, 1)[0].row;
+  }
+  return list.shift().row;
+}
+
+/**
+ * Ключ платежа по рассрочке. Суммы в нём нет: Max пересчитывает проценты по
+ * автокредиту от выгрузки к выгрузке — 403.18 ₪ в августовской и 396.46 ₪ в
+ * сентябрьской, — и по ключу операции такой платёж выглядел новым. Два
+ * платежа одного дня (ежемесячный и финансирование остатка) различает
+ * примечание: «покупка 04.03.2024 · תשלום 30 מתוך 60» и «покупка 04.03.2024».
+ */
+function installmentKey_(source, card, date, merchant, note) {
+  var day = Object.prototype.toString.call(date) === '[object Date]'
+    ? formatDate_(date)
+    : String(date == null ? '' : date).trim();
+  return [
+    String(source || '').trim(),
+    String(card == null ? '' : card).replace(/\D/g, ''),
+    day,
+    String(merchant == null ? '' : merchant).replace(/\s+/g, ' ').trim(),
+    String(note == null ? '' : note).replace(/\s+/g, ' ').trim()
   ].join('|');
 }
 
@@ -8844,39 +8911,84 @@ function saveOperations_(operations, fileName, fileKey) {
   // «בקליטה» у Cal. Ключ у неё будет другой, и без этого списка покупка
   // легла бы в таблицу второй раз
   var waiting = {};
+  // Платежи по рассрочке: у них сумма от выгрузки к выгрузке уточняется
+  var installments = {};
+  var kinds = {};
   if (last >= 2) {
     var stored = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
     stored.forEach(function (row, i) {
-      if (row[15]) seen[String(row[15])] = true;
-      if (String(row[13]) === 'ждёт списания') {
-        waiting[waitingKey_(row[7], row[8], row[0], row[2], row[10])] = 2 + i;
+      var line = 2 + i;
+      var kind = String(row[13]);
+      kinds[line] = kind;
+      if (row[15]) seen[String(row[15])] = line;
+      if (kind === 'ждёт списания') {
+        var key = waitingKey_(row[7], row[8], row[0], row[2]);
+        if (!waiting[key]) waiting[key] = [];
+        waiting[key].push({ row: line, merchant: row[10] });
+      }
+      if (kind === 'рассрочка') {
+        installments[installmentKey_(row[7], row[8], row[0], row[10], row[18])] = line;
       }
     });
   }
 
   var startDate = accountingStartDate_();
   var rows = [];
-  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0, replaced: 0 };
+  var stats = { total: operations.length, added: 0, dupes: 0, skipped: 0, replaced: 0, updated: 0 };
 
   operations.forEach(function (op) {
     if (startDate && op.date < startDate) { stats.skipped++; return; }
-    if (seen[op.key]) { stats.dupes++; return; }
-    seen[op.key] = true;
 
     // Пришла проведённой та покупка, что в прошлый раз только ждала:
     // дописываем в её строку ключ и вид, ничего не задваивая. Категорию,
-    // склейку с чеком и ID не трогаем — они могли быть проставлены руками
+    // склейку с чеком и ID не трогаем — они могли быть проставлены руками.
+    // Ожидание проверяется раньше ключа: у Max ключ непроведённой строки
+    // совпадает с проведённой, и покупка навсегда оставалась «ждёт списания»
     if (op.kind !== 'ждёт списания') {
-      var slot = waiting[waitingKey_(op.source, op.card, op.date, op.amount, op.merchant)];
+      var slot = takeWaitingSlot_(waiting, op);
       if (slot) {
         sheet.getRange(slot, 2).setValue(op.chargeDate || '');
         sheet.getRange(slot, 14).setValue(op.kind);
         sheet.getRange(slot, 16).setValue(op.key);
         sheet.getRange(slot, 18).setValue(op.file || fileName || '');
+        kinds[slot] = op.kind;
+        seen[op.key] = slot;
         stats.replaced++;
         return;
       }
     }
+
+    var known = seen[op.key];
+    if (known !== undefined) {
+      // Та же строка уже в таблице — но если она числилась ожидающей, а
+      // выписка отдала её проведённой, вид надо поправить: ключ у обеих
+      // один, и сама собой такая строка не закроется
+      if (op.kind !== 'ждёт списания' && known && kinds[known] === 'ждёт списания') {
+        sheet.getRange(known, 2).setValue(op.chargeDate || '');
+        sheet.getRange(known, 14).setValue(op.kind);
+        kinds[known] = op.kind;
+        stats.replaced++;
+        return;
+      }
+      stats.dupes++;
+      return;
+    }
+
+    // Платёж по рассрочке с уточнённой суммой: тот же платёж, а не новый
+    if (op.kind === 'рассрочка') {
+      var line = installments[installmentKey_(op.source, op.card, op.date, op.merchant, op.note)];
+      if (line) {
+        sheet.getRange(line, 3).setValue(op.amount);
+        sheet.getRange(line, 5).setValue(toBaseAmount_(op.amount, op.currency));
+        sheet.getRange(line, 16).setValue(op.key);
+        sheet.getRange(line, 18).setValue(op.file || fileName || '');
+        seen[op.key] = line;
+        stats.updated++;
+        return;
+      }
+    }
+
+    seen[op.key] = 0;
 
     rows.push([
       op.date,
@@ -9004,6 +9116,7 @@ function importReportText_(fileName, result) {
   ];
   if (s.dupes) lines.push('Уже были: ' + s.dupes);
   if (s.replaced) lines.push('Дождались списания: ' + s.replaced);
+  if (s.updated) lines.push('Сумма уточнена: ' + s.updated);
   if (s.skipped) lines.push('Раньше начала учёта: ' + s.skipped);
 
   // Без категории трата попадёт в отчёт безымянной строкой — лучше сказать
@@ -10900,4 +11013,151 @@ function categoryLines_(groups, total) {
       (share ? ' · ' + share + '%' : '') + '\n' +
       '<code>' + categoryBar_(group.sum, max) + '</code>';
   });
+}
+
+
+// ===========================================================================
+// 25_Repair
+// ===========================================================================
+
+/**
+ * 25_Repair.gs — разбор завалов в листе «Операции».
+ *
+ * Нужен из-за двух ошибок сопоставления, проживших в боте с 22.08 по
+ * 13.09.2026. Обе задваивали траты, и обе тихо: отчёт сходился сам с собой,
+ * расхождение видно только при сверке с выпиской.
+ *
+ * Первая: покупку, которая ещё не проведена, карточная компания называет
+ * иначе, чем проведённую («Carrefour רמת אלון חיפה» → «CARREFOUR רמת אלון ח»),
+ * а сопоставление требовало точного совпадения названия. Вторая: Max
+ * пересчитывает проценты по автокредиту между выгрузками, и платёж с новой
+ * суммой выглядел новым платежом.
+ *
+ * Сам разбор чинит уже записанное; чтобы не повторялось, поправлены
+ * waitingKey_ и installmentKey_ в 16_Import.gs.
+ */
+
+/**
+ * Похожа ли пара строк на одну и ту же покупку: источник, карта и сумма
+ * совпадают, дни рядом. Названия магазина нарочно не сравниваем — именно
+ * на них разбор и спотыкался.
+ */
+function sameOperation_(waitRow, doneRow) {
+  if (String(waitRow[7]) !== String(doneRow[7])) return false;
+  if (String(waitRow[8]).replace(/\D/g, '') !== String(doneRow[8]).replace(/\D/g, '')) return false;
+  if (Math.abs((Number(waitRow[2]) || 0) - (Number(doneRow[2]) || 0)) > 0.005) return false;
+
+  var a = waitRow[0];
+  var b = doneRow[0];
+  if (Object.prototype.toString.call(a) !== '[object Date]') return false;
+  if (Object.prototype.toString.call(b) !== '[object Date]') return false;
+  // Карточные компании проводят покупку в тот же день или через несколько:
+  // «Steam 17.98» ушёл в выписку 22.08, а вернулся проведённым 23.08
+  return Math.abs(a.getTime() - b.getTime()) <= 4 * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Ищет задвоенные строки. Возвращает {drop: [{row, why, text}], kept: n}.
+ * Ничего не меняет — чтобы список можно было показать до удаления.
+ */
+function findDuplicateOperations_() {
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var last = sheet.getLastRow();
+  var found = { drop: [], locked: [] };
+  if (last < 2) return found;
+
+  var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
+  var line = function (i) { return 2 + i; };
+  var label = function (row) {
+    var day = Object.prototype.toString.call(row[0]) === '[object Date]' ? formatDate_(row[0]) : String(row[0]);
+    return day + ' · ' + (Number(row[2]) || 0).toFixed(2) + ' ₪ · ' + String(row[10] || '');
+  };
+
+  // 1. Ожидающая строка, у которой уже есть проведённая пара
+  var taken = {};
+  rows.forEach(function (waitRow, i) {
+    if (String(waitRow[13]) !== 'ждёт списания') return;
+
+    for (var j = 0; j < rows.length; j++) {
+      if (j === i || taken[j]) continue;
+      var doneRow = rows[j];
+      if (String(doneRow[13]) === 'ждёт списания') continue;
+      if (String(doneRow[14]).trim()) continue; // «не трата» — другая сущность
+      if (!sameOperation_(waitRow, doneRow)) continue;
+
+      // Строку, уже склеенную с чеком или разложенную руками, не трогаем:
+      // проще разобраться глазами, чем потерять чужую работу
+      if (String(waitRow[16]).trim()) {
+        found.locked.push({ row: line(i), text: label(waitRow) });
+        return;
+      }
+      taken[j] = true;
+      found.drop.push({ row: line(i), why: 'дубль строки ' + line(j), text: label(waitRow) });
+      return;
+    }
+  });
+
+  // 2. Платёж по рассрочке, записанный дважды с разными суммами
+  var seenInstallment = {};
+  rows.forEach(function (row, i) {
+    if (String(row[13]) !== 'рассрочка') return;
+    var key = installmentKey_(row[7], row[8], row[0], row[10], row[18]);
+    // Примечание у старых строк могло получить хвост «· null» — он приходил
+    // из выгрузки Max буквальным текстом, и без него ключ тот же
+    key = key.replace(/\s*·\s*null$/i, '');
+    if (!seenInstallment[key]) { seenInstallment[key] = line(i); return; }
+
+    // Остаётся строка из более свежей выгрузки — она и есть последняя оценка
+    var keep = seenInstallment[key];
+    var drop = line(i);
+    if (keep > drop) { keep = drop; drop = seenInstallment[key]; }
+    seenInstallment[key] = keep;
+    if (String(rows[drop - 2][16]).trim()) {
+      found.locked.push({ row: drop, text: label(rows[drop - 2]) });
+      return;
+    }
+    found.drop.push({ row: drop, why: 'платёж уже учтён строкой ' + keep, text: label(rows[drop - 2]) });
+  });
+
+  found.drop.sort(function (a, b) { return a.row - b.row; });
+  return found;
+}
+
+/**
+ * Удаляет найденные дубли. Идём снизу вверх: иначе номера строк поедут.
+ */
+function repairOperations(chatId) {
+  var found = findDuplicateOperations_();
+  var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  var sum = 0;
+
+  found.drop.slice().sort(function (a, b) { return b.row - a.row; }).forEach(function (item) {
+    var row = sheet.getRange(item.row, 1, 1, OPERATION_COLUMNS.length).getValues()[0];
+    sum += Number(row[2]) || 0;
+    sheet.deleteRow(item.row);
+  });
+
+  logEvent_('Разбор задвоенных операций', { удалено: found.drop.length, сумма: sum });
+
+  if (chatId) {
+    var lines = ['<b>Разбор задвоенных операций</b>'];
+    if (!found.drop.length) {
+      lines.push('Задвоенных строк не нашёл.');
+    } else {
+      lines.push('Удалено строк: <b>' + found.drop.length + '</b> на ' + sum.toFixed(2) + ' ₪');
+      found.drop.slice(0, 20).forEach(function (item) {
+        lines.push('• ' + escapeHtml_(item.text) + ' — ' + escapeHtml_(item.why));
+      });
+    }
+    if (found.locked.length) {
+      lines.push('');
+      lines.push('Оставил как есть (строка связана с чеком) — посмотрите сами:');
+      found.locked.forEach(function (item) {
+        lines.push('• строка ' + item.row + ': ' + escapeHtml_(item.text));
+      });
+    }
+    tgSend_(chatId, lines.join('\n'));
+  }
+
+  return { removed: found.drop.length, amount: sum, locked: found.locked.length };
 }
