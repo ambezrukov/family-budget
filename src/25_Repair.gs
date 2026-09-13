@@ -41,7 +41,7 @@ function sameOperation_(waitRow, doneRow) {
 function findDuplicateOperations_() {
   var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
   var last = sheet.getLastRow();
-  var found = { drop: [], locked: [] };
+  var found = { drop: [], locked: [], settle: [] };
   if (last < 2) return found;
 
   var rows = sheet.getRange(2, 1, last - 1, OPERATION_COLUMNS.length).getValues();
@@ -63,8 +63,22 @@ function findDuplicateOperations_() {
       if (String(doneRow[14]).trim()) continue; // «не трата» — другая сущность
       if (!sameOperation_(waitRow, doneRow)) continue;
 
-      // Строку, уже склеенную с чеком или разложенную руками, не трогаем:
-      // проще разобраться глазами, чем потерять чужую работу
+      // Бот успевает склеить с чеком как раз ожидающую строку — она в
+      // таблице раньше. Тогда убирать надо не её, а проведённую копию:
+      // иначе пропадёт разобранная человеком запись. Саму строку при этом
+      // дописываем по проведённой — вид, дату списания и ключ
+      if (String(waitRow[16]).trim() && !String(doneRow[16]).trim()) {
+        taken[j] = true;
+        found.drop.push({
+          row: line(j),
+          why: 'дубль строки ' + line(i) + ', там склейка с чеком',
+          text: label(doneRow)
+        });
+        found.settle.push({ row: line(i), from: line(j) });
+        return;
+      }
+
+      // Обе связаны с чеком — руками надёжнее, чем угадывать
       if (String(waitRow[16]).trim()) {
         found.locked.push({ row: line(i), text: label(waitRow) });
         return;
@@ -86,9 +100,10 @@ function findDuplicateOperations_() {
     if (!seenInstallment[key]) { seenInstallment[key] = line(i); return; }
 
     // Остаётся строка из более свежей выгрузки — она и есть последняя оценка
-    var keep = seenInstallment[key];
-    var drop = line(i);
-    if (keep > drop) { keep = drop; drop = seenInstallment[key]; }
+    // процентов: Max пересчитал 403.18 ₪ в 396.46 ₪, и верна вторая цифра.
+    // Свежая запись лежит в листе ниже, поэтому её номер и больше
+    var keep = Math.max(seenInstallment[key], line(i));
+    var drop = Math.min(seenInstallment[key], line(i));
     seenInstallment[key] = keep;
     if (String(rows[drop - 2][16]).trim()) {
       found.locked.push({ row: drop, text: label(rows[drop - 2]) });
@@ -109,13 +124,24 @@ function repairOperations(chatId) {
   var sheet = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
   var sum = 0;
 
+  // Сначала дописываем уцелевшие строки по их проведённым копиям — пока
+  // копии на месте и номера строк не поехали от удаления
+  found.settle.forEach(function (item) {
+    var done = sheet.getRange(item.from, 1, 1, OPERATION_COLUMNS.length).getValues()[0];
+    sheet.getRange(item.row, 2).setValue(done[1] || '');
+    sheet.getRange(item.row, 14).setValue(done[13]);
+    sheet.getRange(item.row, 16).setValue(done[15]);
+  });
+
   found.drop.slice().sort(function (a, b) { return b.row - a.row; }).forEach(function (item) {
     var row = sheet.getRange(item.row, 1, 1, OPERATION_COLUMNS.length).getValues()[0];
     sum += Number(row[2]) || 0;
     sheet.deleteRow(item.row);
   });
 
-  logEvent_('Разбор задвоенных операций', { удалено: found.drop.length, сумма: sum });
+  logEvent_('Разбор задвоенных операций', {
+    удалено: found.drop.length, сумма: sum, дописано: found.settle.length
+  });
 
   if (chatId) {
     var lines = ['<b>Разбор задвоенных операций</b>'];
@@ -123,6 +149,9 @@ function repairOperations(chatId) {
       lines.push('Задвоенных строк не нашёл.');
     } else {
       lines.push('Удалено строк: <b>' + found.drop.length + '</b> на ' + sum.toFixed(2) + ' ₪');
+      if (found.settle.length) {
+        lines.push('Из них со склейкой сохранена ваша строка: ' + found.settle.length);
+      }
       found.drop.slice(0, 20).forEach(function (item) {
         lines.push('• ' + escapeHtml_(item.text) + ' — ' + escapeHtml_(item.why));
       });
@@ -137,5 +166,8 @@ function repairOperations(chatId) {
     tgSend_(chatId, lines.join('\n'));
   }
 
-  return { removed: found.drop.length, amount: sum, locked: found.locked.length };
+  return {
+    removed: found.drop.length, amount: sum,
+    locked: found.locked.length, settled: found.settle.length
+  };
 }

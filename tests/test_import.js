@@ -774,5 +774,53 @@ check('осталась проведённая строка',
   powerRows.length === 1 && powerRows[0][13] === 'покупка',
   powerRows.map(row => row[13]).join(','));
 
+
+console.log('\n=== Задвоено, но ваша строка склеена с чеком ===');
+
+// Так вышло 13.09.2026: бот склеил с ручной записью как раз ожидающую
+// строку, а проведённая копия осталась рядом. Убирать надо копию —
+// иначе пропадёт разобранная человеком запись
+const chequeSheet = call('ensureSheet_', 'Операции', []);
+chequeSheet.appendRow([new Date(2026, 7, 30), '', 61.8, 'ILS', 61.8, '', '', 'Isracard', '9189',
+  'Анатолий', 'הום סנטר חיפה עזריאלי', 'Дом', '', 'ждёт списания', '', 'isracard:9189:30.08.2026:y',
+  'ЗАПИСЬ-7', 'со-склейкой.xlsx', '', 'id-3']);
+chequeSheet.appendRow([new Date(2026, 7, 30), new Date(2026, 8, 1), 61.8, 'ILS', 61.8, '', '', 'Isracard',
+  '9189', 'Анатолий', 'הום סנטר חיפה עזריאל', '', '', 'покупка', '', 'isracard:028985529',
+  '', 'копия.xlsx', '', 'id-4']);
+
+const repairCheque = call('repairOperations');
+check('копия убрана, а не запись с чеком', repairCheque.removed === 1, JSON.stringify(repairCheque));
+check('строка со склейкой дописана', repairCheque.settled === 1, JSON.stringify(repairCheque));
+const chequeRows = chequeSheet.getDataRange().getValues()
+  .filter(row => String(row[17]) === 'со-склейкой.xlsx' || String(row[17]) === 'копия.xlsx');
+check('осталась одна строка', chequeRows.length === 1, String(chequeRows.length));
+check('это именно запись со склейкой',
+  chequeRows.length === 1 && String(chequeRows[0][16]) === 'ЗАПИСЬ-7',
+  chequeRows.length === 1 ? String(chequeRows[0][16]) : '');
+check('её вид больше не «ждёт списания»',
+  chequeRows.length === 1 && chequeRows[0][13] === 'покупка',
+  chequeRows.length === 1 ? chequeRows[0][13] : '');
+check('ключ взят от проведённой',
+  chequeRows.length === 1 && String(chequeRows[0][15]) === 'isracard:028985529',
+  chequeRows.length === 1 ? String(chequeRows[0][15]) : '');
+
+console.log('\n=== У рассрочки остаётся свежая оценка ===');
+
+const instSheet = call('ensureSheet_', 'Операции', []);
+instSheet.appendRow([new Date(2026, 8, 15), new Date(2026, 8, 15), 403.18, 'ILS', 403.18, '', '', 'Max',
+  '6528', 'Анатолий', 'קיה-тест', '', '', 'рассрочка', '', 'max:старый',
+  '', 'ремонт-август.xlsx', 'покупка 04.03.2024', 'id-5']);
+instSheet.appendRow([new Date(2026, 8, 15), new Date(2026, 8, 15), 396.46, 'ILS', 396.46, '', '', 'Max',
+  '6528', 'Анатолий', 'קיה-тест', '', '', 'рассрочка', '', 'max:свежий',
+  '', 'ремонт-сентябрь.xlsx', 'покупка 04.03.2024', 'id-6']);
+
+call('repairOperations');
+const instRows = instSheet.getDataRange().getValues()
+  .filter(row => String(row[10]) === 'קיה-тест');
+check('платёж остался один', instRows.length === 1, String(instRows.length));
+check('сумма — из свежей выгрузки',
+  instRows.length === 1 && Math.abs(Number(instRows[0][2]) - 396.46) < 0.005,
+  instRows.length === 1 ? String(instRows[0][2]) : '');
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);
