@@ -822,5 +822,36 @@ check('сумма — из свежей выгрузки',
   instRows.length === 1 && Math.abs(Number(instRows[0][2]) - 396.46) < 0.005,
   instRows.length === 1 ? String(instRows[0][2]) : '');
 
+
+console.log('\n=== Обе строки пары склеены с одной записью ===');
+
+// 13.09.2026 бот склеил с ручной записью и ожидающую строку, и проведённую:
+// склейка у них вышла одна и та же. Лишнюю можно убирать смело
+const bothSheet = call('ensureSheet_', 'Операции', []);
+bothSheet.appendRow([new Date(2026, 7, 22), '', 283.47, 'ILS', 283.47, '', '', 'Max', '6528',
+  'Анатолий', '', '', '', 'ждёт списания', '', 'max:6528:22.08.2026::283.47',
+  'ОБЩАЯ-ЗАПИСЬ', 'обе-ожидание.xlsx', '', 'id-7']);
+bothSheet.appendRow([new Date(2026, 7, 22), new Date(2026, 8, 15), 283.47, 'ILS', 283.47, '', '', 'Max',
+  '6528', 'Анатолий', 'שוק דלאל דניה', '', '', 'покупка', '', 'max:6528:22.08.2026:שוק דלאל דניה:283.47',
+  'ОБЩАЯ-ЗАПИСЬ', 'обе-проведено.xlsx', '', 'id-8']);
+
+const repairBoth = call('repairOperations');
+check('дубль с той же склейкой убран', repairBoth.removed === 1, JSON.stringify(repairBoth));
+const bothRows = bothSheet.getDataRange().getValues()
+  .filter(row => String(row[16]) === 'ОБЩАЯ-ЗАПИСЬ');
+check('осталась одна строка', bothRows.length === 1, String(bothRows.length));
+check('осталась проведённая', bothRows.length === 1 && bothRows[0][13] === 'покупка',
+  bothRows.length === 1 ? bothRows[0][13] : '');
+
+console.log('\n=== Примечание с хвостом «null» из старых строк ===');
+
+// Платёж, записанный до починки, несёт в примечании «· null». Свежая
+// выгрузка отдаёт то же примечание уже без хвоста — и это тот же платёж
+const nullKeyOld = call('installmentKey_', 'Max', '6528', new Date(2026, 9, 15), 'קיה',
+  'покупка 04.03.2024 · null');
+const nullKeyNew = call('installmentKey_', 'Max', '6528', new Date(2026, 9, 15), 'קיה',
+  'покупка 04.03.2024');
+check('ключи платежа совпали', nullKeyOld === nullKeyNew, nullKeyOld + ' ≠ ' + nullKeyNew);
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

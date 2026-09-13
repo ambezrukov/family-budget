@@ -698,7 +698,10 @@ function installmentKey_(source, card, date, merchant, note) {
     String(card == null ? '' : card).replace(/\D/g, ''),
     day,
     String(merchant == null ? '' : merchant).replace(/\s+/g, ' ').trim(),
-    String(note == null ? '' : note).replace(/\s+/g, ' ').trim()
+    // Строки, записанные до 13.09.2026, несут в примечании хвост «· null»:
+    // так Max отдавал пустое поле, и бот верил ему на слово. Хвост срезаем,
+    // иначе уже записанный платёж не узнает сам себя и ляжет второй раз
+    String(note == null ? '' : note).replace(/\s+/g, ' ').trim().replace(/\s*·\s*null$/i, '')
   ].join('|');
 }
 
