@@ -166,5 +166,14 @@ check('слияние с существующей парой', merge.applied ===
   String(pairRow('Детские доп. занятия', 'Секции и кружки')[0][2]).indexOf('школ') !== -1,
   JSON.stringify(merge));
 
+console.log('\n=== Короткое слово внутри длинного ===');
+
+// Слово «דמי כרטיס» входило в уже записанное «דמי כרטיס בנק הפועלים מסטר»
+// и потому считалось известным — в справочник не попадало
+call('rememberStoreCategory_', 'דמי כרטיס בנק הפועלים מסטר', 'Прочее', '');
+call('applyCorrections_', call('parseCorrections_', [['דמי כרטיס', 'слово', 'Прочее', '']]), false);
+check('короткое слово дописано отдельно', (call('categorizeByDictionary_', 'דמי כרטיס') || {}).category === 'Прочее',
+  JSON.stringify(call('categorizeByDictionary_', 'דמי כרטיס')));
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);

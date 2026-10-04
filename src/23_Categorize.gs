@@ -112,7 +112,13 @@ function rememberStoreCategory_(store, category, subcategory) {
     if (String(rows[i][1]).trim() !== String(subcategory || '').trim()) continue;
 
     var keywords = String(rows[i][2] || '');
-    if (keywords.toLowerCase().indexOf(key) !== -1) return false;
+    // Сравниваем слова целиком, а не вхождение в строку: «דמי כרטיס» входит
+    // в уже записанное «דמי כרטיס בנק הפועלים מסטר», но само по себе слово
+    // короче и ловит больше — 04.10.2026 оно так и не попало в справочник
+    var present = keywords.toLowerCase().split(/[,;]+/).some(function (word) {
+      return word.trim() === key;
+    });
+    if (present) return false;
 
     sheet.getRange(i + 2, 3).setValue(keywords ? keywords + ', ' + key : key);
     CATEGORIES_CACHE_ = null;
