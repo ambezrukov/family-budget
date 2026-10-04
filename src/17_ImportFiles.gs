@@ -283,6 +283,7 @@ function importFromFolder_(chatId) {
   while (files.hasNext()) {
     var file = files.next();
     if (!looksLikeStatement_(file.getName(), file.getMimeType())) continue;
+    if (isCorrectionsFile_(file.getName())) continue; // правки разбирает /pravki
     // Ключ учитывает время правки: обновлённый файл разбираем заново, а
     // повторы всё равно отсеются на уровне отдельных операций
     var key = 'drive:' + file.getId() + ':' + file.getLastUpdated().getTime();

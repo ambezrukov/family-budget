@@ -251,6 +251,7 @@ function recategorizeOperations_() {
 
   rows.forEach(function (row, position) {
     if (String(row[14]).trim()) return; // «не трата» без категории и живёт
+    if (String(row[20] || '').trim()) return; // категорию поставил человек — словарь не спорит
 
     var store = String(row[10] || '').trim();
     if (!store) return;

@@ -188,6 +188,10 @@ function handleCommand_(message, text) {
     case '/categories':
       handleCategorizeCommand_(message, text);
       return;
+    case '/pravki':
+    case '/fixes':
+      handleCorrectionsCommand_(message, text);
+      return;
     case '/postupleniya':
     case '/prihod':
       handlePendingIncomes_(message);

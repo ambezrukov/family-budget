@@ -337,6 +337,15 @@ function statementCurrency_(value) {
 }
 
 /**
+ * Снятие наличных в банкомате: «משיכה מבנקט», «משיכת מזומן», «כספומט».
+ * Взнос наличных («הפק מזומן-בנקט») сюда не попадает: он приходит в графе
+ * «זכות», и о нём бот спрашивает как о любом поступлении.
+ */
+function isCashWithdrawal_(operation) {
+  return /משיכ|כספומט/.test(String(operation || ''));
+}
+
+/**
  * Строка банковской выписки, которой соответствует общее списание по карте:
  * «מסטרקרד», «דירקט», «ויזה כאל» и подобные, а в графе «אסמכתא» — четыре
  * цифры карты. Такую строку считать тратой нельзя: покупки по этой карте
@@ -505,6 +514,12 @@ function parseStatementBlock_(rows, block, fileName, sheetName, cards) {
       if (credit) {
         operation.kind = 'поступление';
         operation.notTrackable = 'да'; // доходы ведём отдельно, в тратах их быть не должно
+      } else if (isCashWithdrawal_(title)) {
+        // Снятые наличные — ещё не трата: на что они ушли, человек пишет
+        // боту сам («маникюр 420 наличными»). Посчитай мы и снятие, и запись,
+        // одни и те же деньги вошли бы в расходы дважды
+        operation.kind = 'снятие наличных';
+        operation.notTrackable = 'да';
       } else if (isCardSettlement_(title, reference, knownCards)) {
         operation.kind = 'списание по карте';
         operation.notTrackable = 'да'; // покупки уже пришли из выгрузки эмитента
@@ -819,7 +834,8 @@ function saveOperations_(operations, fileName, fileKey) {
       // Если банк не оставил примечания, кладём русское пояснение к названию:
       // через месяц «העברה-נייד» в таблице уже ни о чём не говорит
       op.note || bankTermRu_(op.merchant) || '',
-      newRecordId_()
+      newRecordId_(),
+      ''
     ]);
     stats.added++;
   });

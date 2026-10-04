@@ -36,7 +36,8 @@ const bankExcel = [
   ['2026-08-16', 'מסטרקרד', '', '8322', '2585.93', '', '16560.66', '2026-08-16', '', ''],
   ['2026-08-16', 'דירקט', '', '9189', '74.9', '', '19146.59', '2026-08-16', '', ''],
   ['2026-08-18', 'העב\' לאחר-נייד', 'לטובת: ועד בית', '350833498', '1060', '', '18086.59', '2026-08-18', '', ''],
-  ['2026-08-19', 'זיכוי מלאומי', 'העברה', '99010330', '', '2700', '20786.59', '2026-08-19', '', '']
+  ['2026-08-19', 'זיכוי מלאומי', 'העברה', '99010330', '', '2700', '20786.59', '2026-08-19', '', ''],
+  ['2026-09-16', 'משיכה מבנקט', '', '6256', '600', '', '20186.59', '2026-09-16', '', '']
 ];
 
 const isracard = [
@@ -62,7 +63,7 @@ console.log('\n=== Кто прислал выписку ===');
 
 const bank = call('parseStatement_', bankExcel, 'банк.xlsx');
 check('банковская выписка узнана', bank.ok && bank.source === 'Банк', bank.error || bank.source);
-check('строки прочитаны', bank.operations.length === 4, String(bank.operations.length));
+check('строки прочитаны', bank.operations.length === 5, String(bank.operations.length));
 
 const isra = call('parseStatement_', isracard, 'isracard.xlsx');
 check('Isracard узнан', isra.ok && isra.source === 'Isracard', isra.error || isra.source);
@@ -82,6 +83,11 @@ check('перевод соседям остался тратой', bank.operatio
   bank.operations[2].notTrackable);
 check('поступление не идёт в расходы', bank.operations[3].kind === 'поступление',
   bank.operations[3].kind);
+// 16.09.2026 снятые в банкомате 600 ₪ легли тратой, а Маша записала боту, на
+// что их потратила, — одни и те же деньги вошли в расходы дважды
+check('снятие наличных — не трата', bank.operations[4].kind === 'снятие наличных' &&
+  bank.operations[4].notTrackable === 'да',
+  bank.operations[4].kind + ' / ' + bank.operations[4].notTrackable);
 
 check('у Isracard карта взята из шапки, а не год', isra.operations[0].card === '8322',
   isra.operations[0].card);
