@@ -27,6 +27,10 @@
  *   удалить    — запись «Расходов» или «Доходов» (мягко, как кнопкой)
  *   слово      — дописать ключевое слово в справочник категорий и убрать его
  *                из чужих строк
+ *   переименовать — вместо ID «Старая / Подкатегория», значение «Новая /
+ *                Подкатегория»: строка справочника переезжает вместе с
+ *                ключевыми словами (или сливается с уже существующей), и все
+ *                записи «Операций» и «Расходов» с этой парой — следом
  *
  * «/pravki проверить» только проверяет файл и ничего не меняет.
  */
@@ -95,9 +99,14 @@ function applyCorrections_(corrections, dryRun) {
     sheet.getRange(1, 21).setValue(OPERATION_COLUMNS[20]);
   }
 
-  var expenseNames = categoryNames_();
   var incomeNames = incomeCategoryNames_();
   var result = { applied: 0, failed: [], done: [] };
+
+  // Справочник меняется по ходу файла: «переименовать» и «слово» заводят
+  // новые категории, и следующие строки должны их уже видеть. При проверке
+  // ничего не пишется, поэтому новые названия запоминаются здесь
+  var planned = [];
+  var expenseNames = function () { return categoryNames_().concat(planned); };
 
   var fail = function (item, text) { result.failed.push({ line: item.line, text: text }); };
   var ok = function (item, text) {
@@ -119,7 +128,7 @@ function applyCorrections_(corrections, dryRun) {
         if (!pair.category) { fail(item, 'не указана категория'); return; }
 
         if (operation) {
-          if (expenseNames.indexOf(pair.category) === -1) {
+          if (expenseNames().indexOf(pair.category) === -1) {
             fail(item, 'нет такой категории расходов: «' + pair.category + '»');
             return;
           }
@@ -134,7 +143,7 @@ function applyCorrections_(corrections, dryRun) {
 
         var record = locateRecord_(item.id);
         if (!record) { fail(item, 'строка не найдена: ' + item.id); return; }
-        var names = record.sheetName === SHEET_INCOMES ? incomeNames : expenseNames;
+        var names = record.sheetName === SHEET_INCOMES ? incomeNames : expenseNames();
         if (names.indexOf(pair.category) === -1) {
           fail(item, 'нет такой категории в листе «' + record.sheetName + '»: «' + pair.category + '»');
           return;
@@ -180,7 +189,7 @@ function applyCorrections_(corrections, dryRun) {
         var keyword = item.id.toLowerCase();
         var where = splitCategoryPair_(item.value);
         if (keyword.length < 3) { fail(item, 'слово короче трёх букв: «' + item.id + '»'); return; }
-        if (expenseNames.indexOf(where.category) === -1) {
+        if (expenseNames().indexOf(where.category) === -1) {
           fail(item, 'нет такой категории расходов: «' + where.category + '»');
           return;
         }
@@ -196,6 +205,22 @@ function applyCorrections_(corrections, dryRun) {
         return;
       }
 
+      case 'переименовать': {
+        var from = splitCategoryPair_(item.id);
+        var to = splitCategoryPair_(item.value);
+        if (!from.category || !to.category) { fail(item, 'нужны обе пары: откуда и куда'); return; }
+
+        var moved = dryRun ? countCategoryPair_(from) : renameCategoryPair_(from, to);
+        if (dryRun) planned.push(to.category);
+        if (!moved.dictionary && !moved.rows) {
+          fail(item, 'пары «' + item.id + '» нет ни в справочнике, ни в записях');
+          return;
+        }
+        ok(item, '«' + item.id + '» → «' + item.value + '»: записей ' + moved.rows +
+          (moved.dictionary ? '' : ', в справочнике её не было'));
+        return;
+      }
+
       default:
         fail(item, 'непонятное действие «' + item.action + '»');
     }
@@ -205,6 +230,95 @@ function applyCorrections_(corrections, dryRun) {
     logEvent_('Применены правки', { применено: result.applied, ошибок: result.failed.length });
   }
   return result;
+}
+
+/**
+ * Где встречается пара «категория / подкатегория»: строки справочника и
+ * записи «Операций» и «Расходов». Подкатегория сравнивается точно, пустая —
+ * тоже значение: «Дети» без подкатегории и «Дети / Игрушки» — разные пары.
+ */
+function categoryPairPlaces_(pair) {
+  var same = function (category, subcategory) {
+    return String(category || '').trim() === pair.category &&
+      String(subcategory || '').trim() === pair.subcategory;
+  };
+  var places = { dictionary: [], operations: [], expenses: [] };
+
+  var dictionary = ensureSheet_(SHEET_CATEGORIES, CATEGORY_COLUMNS);
+  if (dictionary.getLastRow() >= 2) {
+    dictionary.getRange(2, 1, dictionary.getLastRow() - 1, 3).getValues().forEach(function (row, i) {
+      if (same(row[0], row[1])) places.dictionary.push({ row: i + 2, keywords: String(row[2] || '') });
+    });
+  }
+
+  var operations = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  if (operations.getLastRow() >= 2) {
+    operations.getRange(2, 12, operations.getLastRow() - 1, 2).getValues().forEach(function (row, i) {
+      if (same(row[0], row[1])) places.operations.push(i + 2);
+    });
+  }
+
+  var expenses = expensesSheet_();
+  if (expenses.getLastRow() >= 2) {
+    expenses.getRange(2, COL_CATEGORY, expenses.getLastRow() - 1, 2).getValues().forEach(function (row, i) {
+      if (same(row[0], row[1])) places.expenses.push(i + 2);
+    });
+  }
+  return places;
+}
+
+function countCategoryPair_(pair) {
+  var places = categoryPairPlaces_(pair);
+  return {
+    dictionary: places.dictionary.length,
+    rows: places.operations.length + places.expenses.length
+  };
+}
+
+/**
+ * Переносит пару категорий целиком: справочник и все записи.
+ */
+function renameCategoryPair_(from, to) {
+  var places = categoryPairPlaces_(from);
+  var dictionary = ensureSheet_(SHEET_CATEGORIES, CATEGORY_COLUMNS);
+
+  if (places.dictionary.length) {
+    var target = categoryPairPlaces_(to).dictionary[0];
+    if (target) {
+      // Новая пара уже есть — дописываем к ней слова старой, без повторов
+      var words = target.keywords.split(',').map(function (w) { return w.trim(); })
+        .filter(function (w) { return w; });
+      places.dictionary.forEach(function (old) {
+        old.keywords.split(',').forEach(function (w) {
+          w = w.trim();
+          if (w && words.indexOf(w) === -1) words.push(w);
+        });
+      });
+      dictionary.getRange(target.row, 3).setValue(words.join(', '));
+      places.dictionary.slice().reverse().forEach(function (old) { dictionary.deleteRow(old.row); });
+    } else {
+      dictionary.getRange(places.dictionary[0].row, 1, 1, 2).setValues([[to.category, to.subcategory]]);
+    }
+  }
+
+  var operations = ensureSheet_(SHEET_OPERATIONS, OPERATION_COLUMNS);
+  places.operations.forEach(function (row) {
+    operations.getRange(row, 12, 1, 2).setValues([[to.category, to.subcategory]]);
+  });
+  var expenses = expensesSheet_();
+  places.expenses.forEach(function (row) {
+    expenses.getRange(row, COL_CATEGORY, 1, 2).setValues([[to.category, to.subcategory]]);
+  });
+
+  CATEGORIES_CACHE_ = null;
+  logEvent_('Категория перенесена', {
+    откуда: from.category + ' / ' + from.subcategory, куда: to.category + ' / ' + to.subcategory,
+    записей: places.operations.length + places.expenses.length
+  });
+  return {
+    dictionary: places.dictionary.length,
+    rows: places.operations.length + places.expenses.length
+  };
 }
 
 /**

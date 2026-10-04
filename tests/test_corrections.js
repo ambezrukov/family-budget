@@ -120,5 +120,51 @@ const report = call('correctionsReportText_', 'правки 04.10.csv', correcti
 check('в отчёте число применённых', report.indexOf('Применено: <b>5</b> из 9') !== -1, report);
 check('в отчёте номер строки с ошибкой', report.indexOf('строка 8') !== -1, report);
 
+console.log('\n=== Перестройка категорий ===');
+
+// 04.10.2026 «Дети» и «Образование» разошлись на три категории: кружки
+// и репетиторы — отдельно, школа — в «Образование»
+const kid = call('appendExpense_', {
+  date: new Date(2026, 8, 5), amount: 200, currency: 'ILS', kind: 'расход',
+  category: 'Образование', subcategory: 'Репетиторы', description: 'математика', sourceType: 'текст'
+});
+const dictRows = () => M.spreadsheet.getSheetByName('Категории').getDataRange().getValues().slice(1);
+const pairRow = (c, sc) => dictRows().filter(r => r[0] === c && String(r[1] || '') === sc);
+
+const restructure = call('parseCorrections_', [
+  ['ID', 'Действие', 'Значение', 'Пояснение'],
+  ['Образование / Репетиторы', 'переименовать', 'Детские доп. занятия / Репетиторы и языки', ''],
+  ['Дети / Кружки и секции', 'переименовать', 'Детские доп. занятия / Секции и кружки', ''],
+  ['иврит', 'слово', 'Детские доп. занятия / Репетиторы и языки', ''],
+  [lawyerId, 'категория', 'Детские доп. занятия / Секции и кружки', ''],
+  ['Нет / Такой', 'переименовать', 'Где-то / Ещё', '']
+]);
+
+const restructureDry = call('applyCorrections_', restructure, true);
+check('проверка видит новую категорию из переименования', restructureDry.applied === 4,
+  JSON.stringify(restructureDry.failed));
+check('проверка ничего не перенесла', pairRow('Образование', 'Репетиторы').length === 1);
+
+const moved = call('applyCorrections_', restructure, false);
+check('перестройка применена', moved.applied === 4, JSON.stringify(moved.failed));
+check('строка справочника переехала', pairRow('Образование', 'Репетиторы').length === 0 &&
+  pairRow('Детские доп. занятия', 'Репетиторы и языки').length === 1);
+check('ключевые слова переехали вместе с ней',
+  String(pairRow('Детские доп. занятия', 'Репетиторы и языки')[0][2]).indexOf('репетитор') !== -1);
+check('запись «Расходов» переложена', call('readExpenseById_', kid.id).category === 'Детские доп. занятия');
+check('новое слово работает', (call('categorizeByDictionary_', 'майя иврит') || {}).category === 'Детские доп. занятия');
+check('несуществующая пара названа ошибкой', moved.failed.length === 1 && moved.failed[0].line === 6,
+  JSON.stringify(moved.failed));
+
+// Перенос в уже существующую пару сливает слова, а старую строку убирает
+const merge = call('applyCorrections_', call('parseCorrections_', [
+  ['Дети / Сад и школа', 'переименовать', 'Детские доп. занятия / Секции и кружки', '']
+]), false);
+check('слияние с существующей парой', merge.applied === 1 &&
+  pairRow('Дети', 'Сад и школа').length === 0 &&
+  pairRow('Детские доп. занятия', 'Секции и кружки').length === 1 &&
+  String(pairRow('Детские доп. занятия', 'Секции и кружки')[0][2]).indexOf('школ') !== -1,
+  JSON.stringify(merge));
+
 console.log(fails ? '\nПровалов: ' + fails : '\nПровалов: 0');
 process.exit(fails ? 1 : 0);
